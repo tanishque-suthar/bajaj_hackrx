@@ -37,7 +37,7 @@ security = HTTPBearer()
 VALID_TOKEN = os.getenv("API_TOKEN", "[REDACTED]")
 
 # Initialize services
-document_processor = DocumentProcessor(chunk_size=500, chunk_overlap=50)
+document_processor = DocumentProcessor(chunk_size=500, chunk_overlap=80)
 rag_service = create_rag_service()
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):

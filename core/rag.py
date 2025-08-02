@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import numpy as np
 import faiss
+import re
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Tuple, Optional
 import logging
@@ -16,7 +17,7 @@ class RAGService:
     def __init__(
         self,
         embedding_model: str = "all-MiniLM-L6-v2",
-        top_k: int = 3,
+        top_k: int = 5,
         gemma_model: str = "gemma-3n-e4b-it"  # Latest experimental model
     ):
         self.top_k = top_k
@@ -41,8 +42,8 @@ class RAGService:
         self.generation_config = genai.types.GenerationConfig(
             temperature=0.1,  # Low temperature for factual responses
             top_p=1.0,
-            top_k=40,
-            max_output_tokens=500,
+            top_k=12,
+            max_output_tokens=200,
             stop_sequences=None,
         )
         
@@ -142,10 +143,13 @@ class RAGService:
             )
             
             # Extract answer from response
-            answer = response.text.strip()
-            logger.info("Answer generated successfully using Gemma 3n")
+            raw_answer = response.text.strip()
             
-            return answer
+            # Clean the answer
+            cleaned_answer = self._clean_answer(raw_answer)
+            logger.info("Answer generated and cleaned successfully using Gemma 3n")
+            
+            return cleaned_answer
             
         except Exception as e:
             logger.error(f"Error generating answer with Gemma: {str(e)}")
@@ -153,24 +157,74 @@ class RAGService:
     
     def _create_gemma_prompt(self, query: str, context: str) -> str:
         """Create a well-structured prompt optimized for Gemma 3n"""
-        prompt = f"""You are an expert insurance policy analyst. Your task is to answer questions accurately based on provided policy documents.
+        prompt = f"""You are a meticulous insurance policy analyst. Your task is to provide a precise and factual answer to the question based ONLY on the provided policy sections.
 
-POLICY DOCUMENT EXCERPTS:
+POLICY SECTIONS:
 {context}
 
 QUESTION: {query}
 
 INSTRUCTIONS:
-- Answer based ONLY on the information provided in the document excerpts above
-- Be specific and include relevant details (time periods, amounts, conditions)
-- If information is not available in the provided excerpts, clearly state "This information is not available in the provided document sections"
-- Keep your response clear, professional, and concise
-- Do not make assumptions beyond what is explicitly stated
-- Focus on factual accuracy over lengthy explanations
+1. Answer the question using only the information from the 'POLICY SECTIONS' above.
+2. Extract specific facts, such as time periods (e.g., 30 days, 24 months), monetary values, percentages, and conditions.
+3. If the answer cannot be found in the provided sections, respond with exactly: "The answer cannot be found in the provided policy sections."
+4. Be direct and concise.
+5. Answer in clean, continuous prose without bullet points or formatting marks
 
 ANSWER:"""
         
         return prompt
+    
+    def _clean_answer(self, raw_answer: str) -> str:
+        """Clean and format the LLM-generated answer"""
+        try:
+            # Remove the raw answer if empty or whitespace only
+            if not raw_answer or not raw_answer.strip():
+                return "I couldn't generate a response. Please try rephrasing your question."
+            
+            answer = raw_answer.strip()
+            
+            # Remove common LLM artifacts and formatting issues
+            # Remove leading "Answer:" or "ANSWER:" if present
+            answer = re.sub(r'^(ANSWER|Answer):\s*', '', answer, flags=re.IGNORECASE)
+            
+            # Remove markdown-style formatting
+            answer = re.sub(r'\*\*(.*?)\*\*', r'\1', answer)  # Remove bold **text**
+            answer = re.sub(r'\*(.*?)\*', r'\1', answer)      # Remove italic *text*
+            answer = re.sub(r'`(.*?)`', r'\1', answer)        # Remove code `text`
+            
+            # Remove excessive special characters and normalize
+            answer = re.sub(r'[^\w\s\.,;:!?()\-\%\$\@\&\#\*\+\=\[\]\{\}<>/"\']', ' ', answer)
+            
+            # Fix spacing issues
+            answer = re.sub(r'\s+([.,;:!?])', r'\1', answer)  # Remove space before punctuation
+            answer = re.sub(r'([.,;:!?])\s*([A-Z])', r'\1 \2', answer)  # Ensure space after punctuation
+            answer = re.sub(r'\s{2,}', ' ', answer)  # Remove multiple spaces
+            
+            # Remove common prefixes that might leak from prompts
+            answer = re.sub(r'^(Based on the provided|According to the|From the document|The document states|In the policy)', 
+                          '', answer, flags=re.IGNORECASE).strip()
+            
+            # Ensure proper sentence structure
+            if answer and not answer[0].isupper():
+                answer = answer[0].upper() + answer[1:]
+            
+            # Ensure proper ending punctuation
+            if answer and answer[-1] not in '.!?':
+                answer += '.'
+            
+            # Final cleanup
+            answer = answer.strip()
+            
+            # Validate minimum length
+            if len(answer) < 10:
+                return "The information requested could not be found in the provided document sections."
+            
+            return answer
+            
+        except Exception as e:
+            logger.error(f"Error cleaning answer: {str(e)}")
+            return raw_answer.strip() if raw_answer else "Unable to process the response."
     
     async def answer_question(self, query: str, chunks: List[str]) -> str:
         """Main method to answer a single question"""
@@ -223,6 +277,6 @@ def create_rag_service() -> RAGService:
     """Factory function to create RAG service with Gemma 3n"""
     return RAGService(
         embedding_model="all-MiniLM-L6-v2",
-        top_k=3,
+        top_k=5,
         gemma_model="gemma-3n-e4b-it"  # Using latest experimental model
     )
