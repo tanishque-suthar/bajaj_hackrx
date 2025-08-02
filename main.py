@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from models import HackRXRequest, HackRXResponse, HealthResponse
 from core.document import DocumentProcessor, get_document_stats
+from core.rag import RAGService, create_rag_service
 import logging
 
 # Load environment variables
@@ -35,8 +36,9 @@ security = HTTPBearer()
 # Auth configuration
 VALID_TOKEN = os.getenv("API_TOKEN", "[REDACTED]")
 
-# Initialize document processor
+# Initialize services
 document_processor = DocumentProcessor(chunk_size=500, chunk_overlap=50)
+rag_service = create_rag_service()
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify bearer token authentication"""
@@ -70,22 +72,19 @@ async def process_hackrx_request(
         logger.info(f"Document URL: {request.documents}")
         
         # Step 1: Process document
+        logger.info("Step 1: Processing document...")
         document_chunks = await document_processor.process_document_from_url(request.documents)
         
         # Log document processing stats
         stats = get_document_stats(document_chunks)
         logger.info(f"Document processing stats: {stats}")
         
-        # TODO: Implement RAG pipeline for question answering
-        # For now, return placeholder responses that include document info
-        placeholder_answers = [
-            f"Based on the document with {stats['total_chunks']} sections, "
-            f"here's the answer to '{question[:50]}...': [Answer will be implemented in next step]"
-            for question in request.questions
-        ]
+        # Step 2: Answer questions using RAG
+        logger.info("Step 2: Answering questions using RAG...")
+        answers = await rag_service.answer_multiple_questions(request.questions, document_chunks)
         
         logger.info("Request processed successfully")
-        return HackRXResponse(answers=placeholder_answers)
+        return HackRXResponse(answers=answers)
         
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
@@ -103,7 +102,12 @@ async def root():
         "endpoints": {
             "health": "/health",
             "main": "/hackrx/run"
-        }
+        },
+        "features": [
+            "PDF document processing",
+            "Semantic search with embeddings",
+            "Question answering with GPT-3.5-turbo"
+        ]
     }
 
 if __name__ == "__main__":
