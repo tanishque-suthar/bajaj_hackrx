@@ -5,7 +5,7 @@ httpx
 pymupdf
 sentence-transformers
 faiss-cpu
-openai
+google-generativeai
 redis
 python-multipart
 python-dotenv
