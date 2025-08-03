@@ -3,9 +3,9 @@ uvicorn
 pydantic
 httpx
 pymupdf
-sentence-transformers
 faiss-cpu
 google-generativeai
+huggingface_hub
 redis
 python-multipart
 python-dotenv

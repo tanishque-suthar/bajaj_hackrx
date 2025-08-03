@@ -15,7 +15,7 @@ class DocumentProcessor:
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.client = httpx.Client(timeout=30.0)
+        # Remove the synchronous client - we'll use async clients in methods
     
     async def process_document_from_url(self, url: str) -> List[str]:
         """
@@ -226,10 +226,7 @@ class DocumentProcessor:
         
         return overlap_text
     
-    def __del__(self):
-        """Cleanup HTTP client"""
-        if hasattr(self, 'client'):
-            self.client.close()
+    # Remove the __del__ method since we no longer have a persistent client
 
 # Utility functions for external use
 async def process_document(url: str) -> List[str]:
