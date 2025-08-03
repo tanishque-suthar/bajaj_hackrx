@@ -34,7 +34,7 @@ app.add_middleware(
 security = HTTPBearer()
 
 # Auth configuration
-VALID_TOKEN = os.getenv("API_TOKEN", "[REDACTED]")
+VALID_TOKEN = os.getenv("API_TOKEN", " ")
 
 # Initialize services
 document_processor = DocumentProcessor(chunk_size=500, chunk_overlap=80)
