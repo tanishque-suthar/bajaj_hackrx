@@ -97,6 +97,26 @@ async def simple_health_check():
     logger.info("Simple health check endpoint called")
     return {"status": "ok", "message": "API is running"}
 
+@app.get("/api-stats")
+async def get_api_statistics(req: Request, token: str = Depends(verify_token)):
+    """Get API key usage statistics"""
+    try:
+        rag_service = req.app.state.rag_service
+        stats = rag_service.get_api_key_statistics()
+        return {"status": "success", "statistics": stats}
+    except AttributeError as e:
+        logger.error(f"RAG service not initialized: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="RAG service not properly initialized"
+        )
+    except Exception as e:
+        logger.error(f"Error getting API statistics: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving statistics: {str(e)}"
+        )
+
 @app.post("/hackrx/run", response_model=HackRXResponse)
 async def process_hackrx_request(
     # --- CHANGE #3: Access services via the 'Request' object ---
@@ -152,12 +172,16 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "health": "/health",
-            "main": "/hackrx/run"
+            "simple_health": "/simple-health",
+            "main": "/hackrx/run",
+            "api_stats": "/api-stats"
         },
         "features": [
             "PDF document processing",
             "Semantic search with embeddings",
-            "Question answering with Gemini"
+            "Question answering with Gemini",
+            "Multiple API key fallback support",
+            "Multi-model fallback (gemini-1.5-flash → gemma-3-12b-it → gemma-3-4b-it)"
         ]
     }
 

@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 import asyncio
+from core.api_key_manager import HuggingFaceAPIKeyManager, GeminiAPIKeyManager, ModelManager
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -24,14 +25,41 @@ class RAGService:
         self.gemma_model = gemma_model
         self.embedding_model = embedding_model
         
-        # --- Hugging Face Inference Client Configuration ---
-        hf_api_token = os.getenv("HF_API_TOKEN")
-        if not hf_api_token:
-            raise ValueError("HF_API_TOKEN not found in environment variables")
+        # --- Initialize Hugging Face API Key Manager ---
+        try:
+            self.hf_key_manager = HuggingFaceAPIKeyManager()
+            logger.info(f"Initialized HF API Key Manager with {len(self.hf_key_manager.api_keys)} keys")
+        except Exception as e:
+            logger.error(f"Failed to initialize HF API Key Manager: {str(e)}")
+            # Fallback to single key approach
+            hf_api_token = os.getenv("HF_API_TOKEN")
+            if not hf_api_token:
+                raise ValueError("Neither HF_API_TOKENS nor HF_API_TOKEN found in environment variables")
+            self.hf_key_manager = None
+            self.hf_client = InferenceClient(api_key=hf_api_token)
+            logger.warning("Using fallback single HF API token")
         
-        self.hf_client = InferenceClient(
-            api_key=hf_api_token,
-        )
+        # --- Initialize Gemini API Key Manager ---
+        try:
+            self.gemini_key_manager = GeminiAPIKeyManager()
+            logger.info(f"Initialized Gemini API Key Manager with {len(self.gemini_key_manager.api_keys)} keys")
+        except Exception as e:
+            logger.error(f"Failed to initialize Gemini API Key Manager: {str(e)}")
+            # Fallback to single key approach
+            google_api_key = os.getenv("GOOGLE_API_KEY")
+            if not google_api_key:
+                raise ValueError("Neither GEMINI_API_TOKENS nor GOOGLE_API_KEY found in environment variables")
+            self.gemini_key_manager = None
+            logger.warning("Using fallback single Gemini API key")
+        
+        # --- Initialize Model Manager ---
+        self.gemini_models = [
+            "gemini-1.5-flash",
+            "gemma-3-12b-it", 
+            "gemma-3-4b-it"
+        ]
+        self.model_manager = ModelManager(self.gemini_models, rate_limit_cooldown=120)
+        
         self.embedding_dim = 384  # Dimension for all-MiniLM-L6-v2
         
         # --- Initialize Google AI Generative Model (Lazy Loading) ---
@@ -42,14 +70,24 @@ class RAGService:
         self.chunks = []
 
     def _initialize_gemini_model(self):
-        """Initialize Gemini model lazily"""
+        """Initialize Gemini model lazily with fallback support"""
         if self.model is None:
-            google_api_key = os.getenv("GOOGLE_API_KEY")
-            if not google_api_key:
-                raise ValueError("GOOGLE_API_KEY not found in environment variables")
-            
-            genai.configure(api_key=google_api_key)
-            self.model = genai.GenerativeModel(self.gemma_model)
+            if not self.gemini_key_manager:
+                # Fallback to single key
+                google_api_key = os.getenv("GOOGLE_API_KEY")
+                if not google_api_key:
+                    raise ValueError("GOOGLE_API_KEY not found in environment variables")
+                genai.configure(api_key=google_api_key)
+                self.model = genai.GenerativeModel(self.gemma_model)
+            else:
+                # Will be configured per request with different API keys
+                # Initial configuration with first available key
+                initial_key = self.gemini_key_manager.get_next_available_key()
+                if initial_key:
+                    genai.configure(api_key=initial_key)
+                    self.model = genai.GenerativeModel(self.gemma_model)
+                else:
+                    raise ValueError("No available Gemini API keys")
             
             self.generation_config = genai.types.GenerationConfig(
                 temperature=0.1,
@@ -59,21 +97,82 @@ class RAGService:
             )
 
     async def create_embeddings(self, texts: List[str]) -> np.ndarray:
-        """Create embeddings for a list of texts using Hugging Face Inference API"""
-        try:
-            logger.info(f"Creating embeddings for {len(texts)} texts via Hugging Face API")
+        """Create embeddings for a list of texts using Hugging Face Inference API with fallback"""
+        if not self.hf_key_manager:
+            # Fallback to single client
+            return await self._create_embeddings_single_client(texts)
+        
+        logger.info(f"Creating embeddings for {len(texts)} texts via Hugging Face API with fallback")
+        
+        max_attempts = len(self.hf_key_manager.api_keys)
+        last_error = None
+        
+        for attempt in range(max_attempts):
+            api_key = self.hf_key_manager.get_next_available_key()
             
-            # Use feature extraction with huggingface_hub
+            if not api_key:
+                logger.error("No available Hugging Face API keys")
+                break
+            
+            try:
+                # Create client with current API key
+                client = InferenceClient(api_key=api_key)
+                
+                # Make API call
+                embeddings = client.feature_extraction(
+                    text=texts,
+                    model=self.embedding_model
+                )
+                
+                # Success - mark key as successful and return results
+                self.hf_key_manager.mark_key_successful(api_key)
+                embeddings_array = np.array(embeddings, dtype=np.float32)
+                logger.info(f"Created embeddings with shape: {embeddings_array.shape}")
+                return embeddings_array
+                
+            except Exception as e:
+                error_msg = str(e)
+                last_error = e
+                
+                logger.warning(f"HF API attempt {attempt + 1} failed with key {self.hf_key_manager._mask_key(api_key)}: {error_msg}")
+                
+                # Check if it's a rate limit error
+                if self.hf_key_manager.is_rate_limit_error(error_msg):
+                    self.hf_key_manager.mark_key_rate_limited(api_key)
+                    logger.info(f"Rate limit detected, trying next key...")
+                    continue
+                
+                # Check if it's an authentication error
+                elif self.hf_key_manager.is_auth_error(error_msg):
+                    self.hf_key_manager.mark_key_failed(api_key)
+                    logger.warning(f"Authentication error, marking key as failed and trying next...")
+                    continue
+                
+                # For other errors, try next key without marking as failed
+                else:
+                    logger.warning(f"Unknown error, trying next key: {error_msg}")
+                    continue
+        
+        # All attempts failed
+        stats = self.hf_key_manager.get_statistics()
+        logger.error(f"All Hugging Face API keys exhausted. Stats: {stats}")
+        
+        if last_error:
+            raise Exception(f"All Hugging Face API keys failed. Last error: {str(last_error)}")
+        else:
+            raise Exception("All Hugging Face API keys are unavailable")
+    
+    async def _create_embeddings_single_client(self, texts: List[str]) -> np.ndarray:
+        """Fallback method for single client (backward compatibility)"""
+        try:
+            logger.info(f"Creating embeddings for {len(texts)} texts via single HF client")
             embeddings = self.hf_client.feature_extraction(
                 text=texts,
                 model=self.embedding_model
             )
-            
-            # Convert to numpy array
             embeddings_array = np.array(embeddings, dtype=np.float32)
             logger.info(f"Created embeddings with shape: {embeddings_array.shape}")
             return embeddings_array
-
         except Exception as e:
             logger.error(f"Error creating Hugging Face embeddings: {str(e)}")
             raise Exception(f"Error creating Hugging Face embeddings: {str(e)}")
@@ -118,12 +217,102 @@ class RAGService:
             raise Exception(f"Error retrieving relevant chunks: {str(e)}")
             
     def generate_answer(self, query: str, relevant_chunks: List[Dict]) -> str:
-        """Generate answer using Google Gemini"""
+        """Generate answer using Google Gemini with model-first fallback strategy"""
+        if not self.gemini_key_manager:
+            # Fallback to single client
+            return self._generate_answer_single_client(query, relevant_chunks)
+        
+        logger.info("Generating answer using Google Gemini with model-first fallback")
+        
+        context = "\n\n".join([
+            f"[Document Section {i+1}]:\n{chunk['chunk']}" 
+            for i, chunk in enumerate(relevant_chunks)
+        ])
+        prompt = self._create_gemma_prompt(query, context)
+        
+        # Model-first strategy: All Keys try flash → All Keys try 12b → All Keys try 4b
+        for model_name in self.gemini_models:
+            # Check if this model is available
+            if (model_name in self.model_manager.failed_models or 
+                model_name in self.model_manager.rate_limited_models):
+                logger.info(f"⏭️ Skipping model {model_name} (not available)")
+                continue
+                
+            logger.info(f"🔄 Trying model: {model_name}")
+            
+            # Try this model with all available API keys
+            for attempt in range(len(self.gemini_key_manager.api_keys)):
+                api_key = self.gemini_key_manager.get_next_available_key()
+                
+                if not api_key:
+                    logger.warning(f"No available API keys for model {model_name}")
+                    break
+                
+                try:
+                    # Configure Gemini with current API key and model
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel(model_name)
+                    
+                    # Make API call
+                    response = model.generate_content(prompt, generation_config=self.generation_config)
+                    raw_answer = response.text.strip()
+                    cleaned_answer = self._clean_answer(raw_answer)
+                    
+                    # Success - mark both key and model as successful
+                    self.gemini_key_manager.mark_key_successful(api_key)
+                    self.model_manager.mark_model_successful(model_name)
+                    
+                    logger.info(f"✅ Answer generated successfully using model: {model_name} with API key: {self.gemini_key_manager._mask_key(api_key)}")
+                    return cleaned_answer
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    logger.warning(f"❌ Failed with model {model_name} and key {self.gemini_key_manager._mask_key(api_key)}: {error_msg}")
+                    
+                    # Check if it's a model-specific rate limit error
+                    if self.gemini_key_manager.is_rate_limit_error(error_msg):
+                        # Could be model-specific or key-specific rate limit
+                        if "model" in error_msg.lower() or model_name in error_msg.lower():
+                            self.model_manager.mark_model_rate_limited(model_name)
+                            logger.info(f"🔄 Model {model_name} rate limited, trying next model")
+                            break  # Try next model
+                        else:
+                            self.gemini_key_manager.mark_key_rate_limited(api_key)
+                            logger.info(f"🔄 API key rate limited, trying next key with same model")
+                            continue  # Try next key with same model
+                    
+                    # Check if it's an authentication error
+                    elif self.gemini_key_manager.is_auth_error(error_msg):
+                        self.gemini_key_manager.mark_key_failed(api_key)
+                        logger.warning(f"🚫 Authentication error, marking key as failed and trying next key")
+                        continue
+                    
+                    # Check if it's a model-specific error
+                    elif any(keyword in error_msg.lower() for keyword in ['model not found', 'invalid model', 'model unavailable']):
+                        self.model_manager.mark_model_failed(model_name)
+                        logger.warning(f"🚫 Model {model_name} failed permanently, trying next model")
+                        break  # Try next model
+                    
+                    # For other errors, continue with next key
+                    else:
+                        logger.warning(f"⚠️ Unknown error, trying next key: {error_msg}")
+                        continue
+        
+        # All models and keys exhausted
+        key_stats = self.gemini_key_manager.get_statistics()
+        model_stats = self.model_manager.get_statistics()
+        logger.error(f"🔴 All Gemini models and API keys exhausted. Key stats: {key_stats}, Model stats: {model_stats}")
+        
+        return "Sorry, all Gemini models and API keys are currently unavailable. Please try again later."
+    
+    def _generate_answer_single_client(self, query: str, relevant_chunks: List[Dict]) -> str:
+        """Fallback method for single client (backward compatibility)"""
         try:
             # Initialize Gemini model if not already done
             self._initialize_gemini_model()
             
-            logger.info("Generating answer using Google Gemini")
+            logger.info("Generating answer using single Gemini client")
             context = "\n\n".join([
                 f"[Document Section {i+1}]:\n{chunk['chunk']}" 
                 for i, chunk in enumerate(relevant_chunks)
@@ -215,6 +404,35 @@ ANSWER:"""
         except Exception as e:
             logger.error(f"Error processing multiple questions: {str(e)}")
             return [f"Error processing questions: {str(e)}" for _ in questions]
+
+    def get_api_key_statistics(self) -> Dict:
+        """Get statistics about API key usage and model usage for both services"""
+        stats = {}
+        
+        # Hugging Face statistics
+        if self.hf_key_manager:
+            stats["huggingface"] = self.hf_key_manager.get_statistics()
+        else:
+            stats["huggingface"] = {
+                "service": "HuggingFace",
+                "mode": "single_key_fallback",
+                "message": "Using single HF_API_TOKEN (no multi-key manager)"
+            }
+        
+        # Gemini API key statistics
+        if self.gemini_key_manager:
+            stats["gemini_keys"] = self.gemini_key_manager.get_statistics()
+        else:
+            stats["gemini_keys"] = {
+                "service": "Gemini",
+                "mode": "single_key_fallback", 
+                "message": "Using single GOOGLE_API_KEY (no multi-key manager)"
+            }
+        
+        # Gemini model statistics
+        stats["gemini_models"] = self.model_manager.get_statistics()
+        
+        return stats
 
 
 def create_rag_service() -> RAGService:
