@@ -4,7 +4,7 @@ An intelligent document processing and question answering system built with Fast
 
 ## Features
 
-- **PDF Document Processing**: Download and extract text from PDF documents via URL
+- **PDF & DOCX Document Processing**: Download and extract text from PDF and DOCX documents via URL
 - **Intelligent Text Chunking**: Smart text segmentation with overlapping chunks for better context preservation
 - **Semantic Search**: Vector-based document retrieval using sentence transformers and FAISS
 - **LLM Question Answering**: Powered by Google's Gemma 3n model for accurate, contextual responses
@@ -15,7 +15,7 @@ An intelligent document processing and question answering system built with Fast
 ## Technology Stack
 
 - **Backend**: FastAPI (Python 3.8+)
-- **Document Processing**: PyMuPDF (fitz) for PDF text extraction
+- **Document Processing**: PyMuPDF (fitz) for PDF text extraction, python-docx for DOCX processing
 - **Embeddings**: SentenceTransformers with all-MiniLM-L6-v2 model
 - **Vector Database**: FAISS for efficient similarity search
 - **LLM**: Google Gemma 3n via Google AI API
@@ -91,6 +91,8 @@ POST /hackrx/run
 }
 ```
 
+**Note**: The system now supports both PDF (.pdf) and DOCX (.docx) documents. File type is automatically detected from the URL extension or file content.
+
 **Headers:**
 ```http
 Authorization: Bearer your_token_here
@@ -112,7 +114,8 @@ Content-Type: application/json
 ### Core Components
 
 1. **DocumentProcessor** (`core/document.py`)
-   - PDF downloading and text extraction
+   - PDF and DOCX downloading and text extraction
+   - Automatic file type detection
    - Text cleaning and preprocessing
    - Intelligent text chunking with overlap
 
@@ -130,8 +133,8 @@ Content-Type: application/json
 ### Processing Pipeline
 
 ```
-PDF URL → Download → Text Extraction → Cleaning → Chunking → Embeddings → Vector Store
-                                                                              ↓
+PDF/DOCX URL → Download → File Type Detection → Text Extraction → Cleaning → Chunking → Embeddings → Vector Store
+                                                                                                          ↓
 Question → Query Embedding → Similarity Search → Context Retrieval → LLM → Answer Cleaning
 ```
 

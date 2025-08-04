@@ -1,5 +1,6 @@
 import httpx
 import fitz  # PyMuPDF
+from docx import Document  # python-docx
 import re
 import logging
 from typing import List, Optional, Tuple
@@ -10,7 +11,7 @@ import os
 logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
-    """Handles PDF document downloading, processing, and chunking"""
+    """Handles PDF and DOCX document downloading, processing, and chunking"""
     
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
         self.chunk_size = chunk_size
@@ -19,17 +20,18 @@ class DocumentProcessor:
     
     async def process_document_from_url(self, url: str) -> List[str]:
         """
-        Main method to process document from URL
+        Main method to process document from URL (supports PDF and DOCX)
         Returns list of text chunks
         """
         try:
             logger.info(f"Starting document processing for URL: {url}")
             
-            # Step 1: Download PDF
-            pdf_content = await self._download_pdf(url)
+            # Step 1: Download document
+            document_content = await self._download_document(url)
             
-            # Step 2: Extract text
-            raw_text = self._extract_text_from_pdf(pdf_content)
+            # Step 2: Detect file type and extract text
+            file_type = self._detect_file_type(url, document_content)
+            raw_text = self._extract_text(document_content, file_type)
             
             # Step 3: Clean and preprocess
             cleaned_text = self._clean_and_preprocess(raw_text)
@@ -44,10 +46,10 @@ class DocumentProcessor:
             logger.error(f"Error processing document: {str(e)}")
             raise Exception(f"Failed to process document: {str(e)}")
     
-    async def _download_pdf(self, url: str) -> bytes:
-        """Download PDF from URL"""
+    async def _download_document(self, url: str) -> bytes:
+        """Download document from URL (supports PDF and DOCX)"""
         try:
-            logger.info("Downloading PDF from URL")
+            logger.info("Downloading document from URL")
             
             # Validate URL
             parsed_url = urlparse(url)
@@ -59,18 +61,45 @@ class DocumentProcessor:
                 response = await client.get(url)
                 response.raise_for_status()
                 
-                # Verify content type
+                # Log content type for debugging
                 content_type = response.headers.get('content-type', '')
-                if 'pdf' not in content_type.lower() and not url.lower().endswith('.pdf'):
-                    logger.warning(f"Content type might not be PDF: {content_type}")
+                logger.info(f"Downloaded document: {len(response.content)} bytes, content-type: {content_type}")
                 
-                logger.info(f"Downloaded PDF: {len(response.content)} bytes")
                 return response.content
                 
         except httpx.HTTPError as e:
-            raise Exception(f"HTTP error downloading PDF: {str(e)}")
+            raise Exception(f"HTTP error downloading document: {str(e)}")
         except Exception as e:
-            raise Exception(f"Error downloading PDF: {str(e)}")
+            raise Exception(f"Error downloading document: {str(e)}")
+    
+    def _detect_file_type(self, url: str, content: bytes) -> str:
+        """Detect file type from URL and content"""
+        url_lower = url.lower()
+        
+        # Check URL extension first
+        if url_lower.endswith('.pdf'):
+            return 'pdf'
+        elif url_lower.endswith('.docx'):
+            return 'docx'
+        
+        # Check file signature (magic bytes)
+        if content[:4] == b'%PDF':
+            return 'pdf'
+        elif content[:2] == b'PK' and b'word/' in content[:1000]:  # DOCX is a ZIP file containing word/ folder
+            return 'docx'
+        
+        # Default to PDF for backward compatibility
+        logger.warning("Could not determine file type, defaulting to PDF")
+        return 'pdf'
+    
+    def _extract_text(self, content: bytes, file_type: str) -> str:
+        """Extract text based on file type"""
+        if file_type == 'pdf':
+            return self._extract_text_from_pdf(content)
+        elif file_type == 'docx':
+            return self._extract_text_from_docx(content)
+        else:
+            raise ValueError(f"Unsupported file type: {file_type}")
     
     def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
         """Extract text from PDF using PyMuPDF"""
@@ -115,6 +144,63 @@ class DocumentProcessor:
         except Exception as e:
             raise Exception(f"Error extracting text from PDF: {str(e)}")
     
+    def _extract_text_from_docx(self, docx_content: bytes) -> str:
+        """Extract text from DOCX using python-docx"""
+        try:
+            logger.info("Extracting text from DOCX")
+            
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
+                temp_file.write(docx_content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Open DOCX with python-docx
+                doc = Document(temp_file_path)
+                text_content = []
+                
+                # Extract text from paragraphs
+                for para_num, paragraph in enumerate(doc.paragraphs):
+                    para_text = paragraph.text.strip()
+                    if para_text:  # Only add non-empty paragraphs
+                        # Check if this looks like a heading (simple heuristic)
+                        if paragraph.style.name.startswith('Heading') or (
+                            len(para_text) < 100 and 
+                            para_text.count('.') == 0 and 
+                            para_text.isupper() == False and
+                            para_text[0].isupper()
+                        ):
+                            text_content.append(f"\n--- {para_text} ---\n")
+                        else:
+                            text_content.append(para_text)
+                
+                # Extract text from tables
+                for table_num, table in enumerate(doc.tables):
+                    text_content.append(f"\n--- Table {table_num + 1} ---\n")
+                    for row in table.rows:
+                        row_text = []
+                        for cell in row.cells:
+                            cell_text = cell.text.strip()
+                            if cell_text:
+                                row_text.append(cell_text)
+                        if row_text:
+                            text_content.append(" | ".join(row_text))
+                
+                # Combine all text
+                full_text = "\n".join(text_content)
+                
+                logger.info(f"Extracted text from {len(doc.paragraphs)} paragraphs and {len(doc.tables)} tables, {len(full_text)} characters")
+                
+                return full_text
+                
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+                    
+        except Exception as e:
+            raise Exception(f"Error extracting text from DOCX: {str(e)}")
+    
     def _clean_and_preprocess(self, text: str) -> str:
         """Clean and preprocess extracted text"""
         try:
@@ -138,11 +224,20 @@ class DocumentProcessor:
             # Remove extra spaces
             text = re.sub(r'\s{2,}', ' ', text)
             
-            # Remove page markers but keep structure
+            # Remove page markers but keep structure (for PDF)
             text = re.sub(r'\n--- Page \d+ ---\n', '\n\n', text)
+            
+            # Remove table markers but keep structure (for DOCX)
+            text = re.sub(r'\n--- Table \d+ ---\n', '\n\n', text)
+            
+            # Clean up heading markers - convert to paragraph breaks
+            text = re.sub(r'\n--- (.*?) ---\n', r'\n\n\1\n\n', text)
             
             # Preserve paragraph breaks
             text = re.sub(r'\n\s*\n', '\n\n', text)
+            
+            # Clean up table separators
+            text = re.sub(r'\s*\|\s*', ' | ', text)  # Normalize table separators
             
             # Trim and normalize
             text = text.strip()
@@ -230,7 +325,7 @@ class DocumentProcessor:
 
 # Utility functions for external use
 async def process_document(url: str) -> List[str]:
-    """Convenience function to process a document"""
+    """Convenience function to process a document (PDF or DOCX)"""
     processor = DocumentProcessor()
     return await processor.process_document_from_url(url)
 

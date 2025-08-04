@@ -3,6 +3,7 @@ uvicorn
 pydantic
 httpx
 pymupdf
+python-docx
 faiss-cpu
 google-generativeai
 huggingface_hub
