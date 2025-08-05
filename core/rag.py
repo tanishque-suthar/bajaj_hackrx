@@ -1,29 +1,34 @@
 import google.generativeai as genai
 import numpy as np
-import faiss
+from pinecone import Pinecone, ServerlessSpec
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 import logging
 import os
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 import asyncio
-from core.api_key_manager import HuggingFaceAPIKeyManager, GeminiAPIKeyManager, ModelManager
+import uuid
+import time
+from core.api_key_manager import HuggingFaceAPIKeyManager, GeminiAPIKeyManager, ModelManager, PineconeAPIKeyManager
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 class RAGService:
-    """RAG service using Hugging Face Inference API for embeddings and Gemini for generation"""
+    """RAG service using Hugging Face Inference API for embeddings and Pinecone for vector storage"""
     
     def __init__(
         self,
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
         top_k: int = 5,
-        gemma_model: str = "gemini-1.5-flash"
+        gemma_model: str = "gemini-1.5-flash",
+        auto_cleanup: bool = True
     ):
         self.top_k = top_k
         self.gemma_model = gemma_model
         self.embedding_model = embedding_model
+        self.embedding_dim = 384  # Dimension for all-MiniLM-L6-v2
+        self.auto_cleanup = auto_cleanup  # Control automatic cleanup behavior
         
         # --- Initialize Hugging Face API Key Manager ---
         try:
@@ -52,6 +57,31 @@ class RAGService:
             self.gemini_key_manager = None
             logger.warning("Using fallback single Gemini API key")
         
+        # --- Initialize Pinecone ---
+        try:
+            pinecone_api_key = os.getenv("PINECONE_API_KEY")
+            if not pinecone_api_key:
+                raise ValueError("PINECONE_API_KEY not found in environment variables")
+            
+            logger.info("Initializing Pinecone client...")
+            self.pinecone_client = Pinecone(api_key=pinecone_api_key)
+            self.pinecone_environment = os.getenv("PINECONE_ENVIRONMENT", "us-east-1-aws")
+            self.pinecone_index_name = os.getenv("PINECONE_INDEX_NAME", "bajaj-hackrx-index")
+            
+            logger.info(f"Pinecone client created for environment: {self.pinecone_environment}")
+            logger.info(f"Target index name: {self.pinecone_index_name}")
+            
+            # Initialize or connect to index
+            self._initialize_pinecone_index()
+            
+            logger.info("Pinecone initialization completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Pinecone: {str(e)}")
+            self.pinecone_client = None
+            self.pinecone_index = None
+            raise ValueError(f"Pinecone initialization failed: {str(e)}")
+        
         # --- Initialize Model Manager ---
         self.gemini_models = [
             "gemini-1.5-flash",
@@ -60,14 +90,82 @@ class RAGService:
         ]
         self.model_manager = ModelManager(self.gemini_models, rate_limit_cooldown=120)
         
-        self.embedding_dim = 384  # Dimension for all-MiniLM-L6-v2
-        
         # --- Initialize Google AI Generative Model (Lazy Loading) ---
         self.model = None
         self.generation_config = None
         
-        self.vector_store = None
+        # Session management (index is initialized above in Pinecone section)
+        self.current_session_id = None
         self.chunks = []
+        
+        # Debug: Verify Pinecone index state after initialization
+        if hasattr(self, 'pinecone_index') and self.pinecone_index is not None:
+            logger.info("✅ Pinecone index successfully initialized and ready for use")
+        else:
+            logger.error("❌ Pinecone index is None after initialization - this will cause errors")
+
+    def _initialize_pinecone_index(self):
+        """Initialize or connect to Pinecone index"""
+        try:
+            logger.info("Starting Pinecone index initialization...")
+            
+            # Check if index exists
+            logger.info("Listing existing Pinecone indexes...")
+            existing_indexes = self.pinecone_client.list_indexes()
+            index_names = [index.name for index in existing_indexes]
+            logger.info(f"Existing indexes: {index_names}")
+            
+            if self.pinecone_index_name not in index_names:
+                logger.info(f"Creating new Pinecone index: {self.pinecone_index_name}")
+                
+                # Parse region correctly - handle both "us-east-1" and "us-east-1-aws" formats
+                region = self.pinecone_environment
+                if not region.endswith("-aws"):
+                    region = f"{region}-aws"
+                logger.info(f"Using region: {region}")
+                
+                # Create new index with serverless spec
+                self.pinecone_client.create_index(
+                    name=self.pinecone_index_name,
+                    dimension=self.embedding_dim,
+                    metric="cosine",  # Equivalent to IP with L2 normalization
+                    spec=ServerlessSpec(
+                        cloud="aws",
+                        region=region
+                    )
+                )
+                logger.info("Index creation request sent, waiting for index to be ready...")
+                
+                # Wait for index to be ready
+                while not self.pinecone_client.describe_index(self.pinecone_index_name).status['ready']:
+                    logger.info("Waiting for Pinecone index to be ready...")
+                    time.sleep(1)
+                
+                logger.info(f"Pinecone index created successfully: {self.pinecone_index_name}")
+            else:
+                logger.info(f"Pinecone index already exists: {self.pinecone_index_name}")
+            
+            # Connect to index
+            logger.info(f"Connecting to Pinecone index: {self.pinecone_index_name}")
+            self.pinecone_index = self.pinecone_client.Index(self.pinecone_index_name)
+            
+            # Verify connection by getting index stats
+            logger.info("Verifying index connection...")
+            stats = self.pinecone_index.describe_index_stats()
+            logger.info(f"Index stats - Total vectors: {stats.total_vector_count}, Dimension: {stats.dimension}")
+            logger.info(f"Successfully connected to Pinecone index: {self.pinecone_index_name}")
+            
+        except Exception as e:
+            logger.error(f"Error initializing Pinecone index: {str(e)}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            self.pinecone_index = None  # Ensure it's set to None on failure
+            raise Exception(f"Failed to initialize Pinecone index: {str(e)}")
+
+    def _generate_session_id(self) -> str:
+        """Generate a unique session ID for document processing"""
+        return f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
     def _initialize_gemini_model(self):
         """Initialize Gemini model lazily with fallback support"""
@@ -178,42 +276,97 @@ class RAGService:
             raise Exception(f"Error creating Hugging Face embeddings: {str(e)}")
 
     async def build_vector_store(self, chunks: List[str]) -> None:
-        """Build FAISS vector store from document chunks"""
+        """Build Pinecone vector store from document chunks"""
         try:
-            logger.info("Building vector store from chunks")
+            if not self.pinecone_index:
+                raise ValueError("Pinecone index not initialized. Check Pinecone configuration and connection.")
+            
+            logger.info("Building vector store in Pinecone from chunks")
             self.chunks = chunks
             
+            # Generate a new session ID for this document processing
+            self.current_session_id = self._generate_session_id()
+            
+            # Create embeddings for all chunks
             chunk_embeddings = await self.create_embeddings(chunks)
             
-            self.vector_store = faiss.IndexFlatIP(self.embedding_dim)
-            faiss.normalize_L2(chunk_embeddings)
-            self.vector_store.add(chunk_embeddings)
+            # Prepare vectors for Pinecone upsert
+            vectors_to_upsert = []
+            for i, (chunk, embedding) in enumerate(zip(chunks, chunk_embeddings)):
+                vector_id = f"{self.current_session_id}_chunk_{i}"
+                metadata = {
+                    "session_id": self.current_session_id,
+                    "chunk_index": i,
+                    "text": chunk[:1000],  # Limit text size for metadata
+                    "chunk_length": len(chunk),
+                    "timestamp": int(time.time())
+                }
+                
+                vectors_to_upsert.append({
+                    "id": vector_id,
+                    "values": embedding.tolist(),
+                    "metadata": metadata
+                })
             
-            logger.info(f"Vector store built with {len(chunks)} chunks")
+            # Upsert vectors to Pinecone in batches
+            batch_size = 100  # Pinecone recommended batch size
+            for i in range(0, len(vectors_to_upsert), batch_size):
+                batch = vectors_to_upsert[i:i + batch_size]
+                self.pinecone_index.upsert(vectors=batch)
+                logger.info(f"Upserted batch {i // batch_size + 1}/{(len(vectors_to_upsert) + batch_size - 1) // batch_size}")
+            
+            logger.info(f"Vector store built in Pinecone with {len(chunks)} chunks for session: {self.current_session_id}")
+            
         except Exception as e:
+            logger.error(f"Error building vector store: {str(e)}")
             raise Exception(f"Error building vector store: {str(e)}")
 
     async def retrieve_relevant_chunks(self, query: str) -> List[Dict]:
-        """Retrieve top-k relevant chunks for a query"""
+        """Retrieve top-k relevant chunks for a query using Pinecone"""
         try:
-            if not self.vector_store or not self.chunks:
+            if not self.pinecone_index or not self.current_session_id:
                 raise ValueError("Vector store not initialized. Call build_vector_store first.")
             
             logger.info(f"Retrieving relevant chunks for query: {query[:50]}...")
             
+            # Create query embedding
             query_embedding = await self.create_embeddings([query])
-            faiss.normalize_L2(query_embedding)
             
-            scores, indices = self.vector_store.search(query_embedding, self.top_k)
+            # Query Pinecone index
+            query_response = self.pinecone_index.query(
+                vector=query_embedding[0].tolist(),
+                top_k=self.top_k,
+                include_metadata=True,
+                filter={"session_id": self.current_session_id}  # Filter by current session
+            )
             
-            results = [
-                {"chunk": self.chunks[idx], "score": float(score), "index": int(idx)}
-                for score, idx in zip(scores[0], indices[0]) if idx < len(self.chunks)
-            ]
+            # Format results
+            results = []
+            for match in query_response.matches:
+                # Get the full chunk text from our stored chunks or metadata
+                chunk_index = match.metadata.get("chunk_index", 0)
+                # Ensure chunk_index is an integer (Pinecone may return it as float)
+                chunk_index = int(chunk_index)
+                chunk_text = ""
+                
+                if chunk_index < len(self.chunks):
+                    chunk_text = self.chunks[chunk_index]
+                else:
+                    # Fallback to metadata text if chunks not available
+                    chunk_text = match.metadata.get("text", "")
+                
+                results.append({
+                    "chunk": chunk_text,
+                    "score": float(match.score),
+                    "index": chunk_index,
+                    "vector_id": match.id
+                })
             
-            logger.info(f"Retrieved {len(results)} relevant chunks")
+            logger.info(f"Retrieved {len(results)} relevant chunks from Pinecone")
             return results
+            
         except Exception as e:
+            logger.error(f"Error retrieving relevant chunks: {str(e)}")
             raise Exception(f"Error retrieving relevant chunks: {str(e)}")
             
     def generate_answer(self, query: str, relevant_chunks: List[Dict]) -> str:
@@ -384,7 +537,7 @@ ANSWER:"""
             return f"Sorry, I couldn't answer this question due to an error: {str(e)}"
 
     async def answer_multiple_questions(self, questions: List[str], chunks: List[str]) -> List[str]:
-        """Answer multiple questions efficiently"""
+        """Answer multiple questions efficiently with automatic cleanup"""
         try:
             logger.info(f"Processing {len(questions)} questions with Gemini")
             # Build vector store once for all questions
@@ -400,13 +553,59 @@ ANSWER:"""
                     final_answers.append("Sorry, an error occurred for this question.")
                 else:
                     final_answers.append(result)
+            
+            # Automatic cleanup after processing all questions (if enabled)
+            if self.auto_cleanup:
+                try:
+                    logger.info("Automatically cleaning up vectors after request completion")
+                    self.cleanup_session()
+                    logger.info("Vectors cleaned up successfully")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup vectors (non-critical): {str(cleanup_error)}")
+            else:
+                logger.debug("Auto-cleanup disabled, vectors will persist")
+            
             return final_answers
         except Exception as e:
             logger.error(f"Error processing multiple questions: {str(e)}")
+            # Attempt cleanup even if there was an error (if auto-cleanup enabled)
+            if self.auto_cleanup:
+                try:
+                    self.cleanup_session()
+                    logger.info("Vectors cleaned up after error")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup vectors after error (non-critical): {str(cleanup_error)}")
             return [f"Error processing questions: {str(e)}" for _ in questions]
+    
+    def cleanup_session(self, session_id: Optional[str] = None):
+        """Clean up vectors from a specific session in Pinecone"""
+        try:
+            if not self.pinecone_index:
+                logger.warning("Pinecone index not initialized, skipping cleanup")
+                return
+                
+            target_session = session_id or self.current_session_id
+            if not target_session:
+                logger.warning("No session ID provided for cleanup")
+                return
+            
+            logger.info(f"Cleaning up Pinecone vectors for session: {target_session}")
+            
+            # Delete vectors by session filter
+            self.pinecone_index.delete(filter={"session_id": target_session})
+            
+            if target_session == self.current_session_id:
+                self.current_session_id = None
+                self.chunks = []
+            
+            logger.info(f"Cleaned up session: {target_session}")
+            
+        except Exception as e:
+            target_session = session_id or self.current_session_id
+            logger.error(f"Error cleaning up session {target_session}: {str(e)}")
 
     def get_api_key_statistics(self) -> Dict:
-        """Get statistics about API key usage and model usage for both services"""
+        """Get statistics about API key usage and model usage for all services"""
         stats = {}
         
         # Hugging Face statistics
@@ -432,9 +631,30 @@ ANSWER:"""
         # Gemini model statistics
         stats["gemini_models"] = self.model_manager.get_statistics()
         
+        # Pinecone statistics
+        try:
+            index_stats = self.pinecone_index.describe_index_stats()
+            stats["pinecone"] = {
+                "service": "Pinecone",
+                "index_name": self.pinecone_index_name,
+                "environment": self.pinecone_environment,
+                "current_session": self.current_session_id,
+                "total_vectors": index_stats.total_vector_count,
+                "dimension": self.embedding_dim,
+                "index_fullness": index_stats.index_fullness,
+                "namespaces": dict(index_stats.namespaces) if hasattr(index_stats, 'namespaces') else {}
+            }
+        except Exception as e:
+            stats["pinecone"] = {
+                "service": "Pinecone",
+                "error": f"Unable to get Pinecone stats: {str(e)}"
+            }
+        
         return stats
 
 
 def create_rag_service() -> RAGService:
     """Factory function to create RAG service"""
-    return RAGService()
+    # Read auto-cleanup setting from environment
+    auto_cleanup = os.getenv("AUTO_CLEANUP_VECTORS", "True").lower() in ("true", "1", "yes", "on")
+    return RAGService(auto_cleanup=auto_cleanup)

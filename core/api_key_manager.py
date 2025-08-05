@@ -259,6 +259,44 @@ class GeminiAPIKeyManager(APIKeyManager):
         return any(indicator in error_lower for indicator in auth_error_indicators)
 
 
+class PineconeAPIKeyManager(APIKeyManager):
+    """Specialized API Key Manager for Pinecone"""
+    
+    def __init__(self):
+        super().__init__(
+            service_name="Pinecone",
+            env_var_name="PINECONE_API_KEY",
+            rate_limit_cooldown=120  # 2 minutes
+        )
+    
+    def is_rate_limit_error(self, error_message: str) -> bool:
+        """Check if error message indicates rate limiting for Pinecone API"""
+        error_lower = error_message.lower()
+        rate_limit_indicators = [
+            'rate limit', 'rate_limit', 'rate-limit',
+            'quota exceeded', 'quota_exceeded',
+            'too many requests', 'too_many_requests',
+            'throttle', 'throttled',
+            '429', 'http 429',
+            'requests per second', 'requests_per_second'
+        ]
+        
+        return any(indicator in error_lower for indicator in rate_limit_indicators)
+    
+    def is_auth_error(self, error_message: str) -> bool:
+        """Check if error message indicates authentication failure for Pinecone API"""
+        error_lower = error_message.lower()
+        auth_error_indicators = [
+            'unauthorized', 'invalid api key', 'invalid_api_key',
+            'authentication failed', 'authentication_failed',
+            'forbidden', '401', 'http 401',
+            '403', 'http 403',
+            'api key not found', 'api_key_not_found'
+        ]
+        
+        return any(indicator in error_lower for indicator in auth_error_indicators)
+
+
 class ModelManager:
     """Manages model fallback for Gemini API"""
     

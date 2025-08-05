@@ -6,7 +6,7 @@ An intelligent document processing and question answering system built with Fast
 
 - **PDF & DOCX Document Processing**: Download and extract text from PDF and DOCX documents via URL
 - **Intelligent Text Chunking**: Smart text segmentation with overlapping chunks for better context preservation
-- **Semantic Search**: Vector-based document retrieval using sentence transformers and FAISS
+- **Semantic Search**: Vector-based document retrieval using sentence transformers and Pinecone
 - **LLM Question Answering**: Powered by Google's Gemma 3n model for accurate, contextual responses
 - **Answer Post-processing**: Intelligent cleaning and formatting of AI-generated responses
 - **RESTful API**: Clean, documented API endpoints with authentication
@@ -17,13 +17,14 @@ An intelligent document processing and question answering system built with Fast
 - **Backend**: FastAPI (Python 3.8+)
 - **Document Processing**: PyMuPDF (fitz) for PDF text extraction, python-docx for DOCX processing
 - **Embeddings**: SentenceTransformers with all-MiniLM-L6-v2 model
-- **Vector Database**: FAISS for efficient similarity search
+- **Vector Database**: Pinecone for efficient similarity search and persistent storage
 - **LLM**: Google Gemma 3n via Google AI API
 
 ## Prerequisites
 
 - Python 3.8 or higher
 - Google AI API key (for Gemma model access)
+- Pinecone API key (for vector storage)
 - Required Python packages (see requirements.txt)
 
 ## Installation
@@ -50,6 +51,9 @@ An intelligent document processing and question answering system built with Fast
    ```env
    GOOGLE_API_KEY=your_google_ai_api_key_here
    API_TOKEN=your_bearer_token_here
+   PINECONE_API_KEY=your_pinecone_api_key_here
+   PINECONE_ENVIRONMENT=us-east-1-aws
+   PINECONE_INDEX_NAME=bajaj-hackrx-index
    ```
 
 ## Usage
@@ -121,7 +125,7 @@ Content-Type: application/json
 
 2. **RAGService** (`core/rag.py`)
    - Embedding generation using SentenceTransformers
-   - Vector store management with FAISS
+   - Vector store management with Pinecone
    - Semantic retrieval and answer generation
    - Response post-processing and cleaning
 
@@ -133,7 +137,7 @@ Content-Type: application/json
 ### Processing Pipeline
 
 ```
-PDF/DOCX URL → Download → File Type Detection → Text Extraction → Cleaning → Chunking → Embeddings → Vector Store
+PDF/DOCX URL → Download → File Type Detection → Text Extraction → Cleaning → Chunking → Embeddings → Pinecone Vector Store
                                                                                                           ↓
 Question → Query Embedding → Similarity Search → Context Retrieval → LLM → Answer Cleaning
 ```

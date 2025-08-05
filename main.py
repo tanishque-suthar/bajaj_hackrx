@@ -117,6 +117,26 @@ async def get_api_statistics(req: Request, token: str = Depends(verify_token)):
             detail=f"Error retrieving statistics: {str(e)}"
         )
 
+@app.post("/cleanup-session")
+async def cleanup_session(req: Request, session_id: str = None, token: str = Depends(verify_token)):
+    """Clean up Pinecone vectors for a specific session"""
+    try:
+        rag_service = req.app.state.rag_service
+        rag_service.cleanup_session(session_id)
+        return {"status": "success", "message": f"Session {session_id or 'current'} cleaned up successfully"}
+    except AttributeError as e:
+        logger.error(f"RAG service not initialized: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="RAG service not properly initialized"
+        )
+    except Exception as e:
+        logger.error(f"Error cleaning up session: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error cleaning up session: {str(e)}"
+        )
+
 @app.post("/hackrx/run", response_model=HackRXResponse)
 async def process_hackrx_request(
     # --- CHANGE #3: Access services via the 'Request' object ---
@@ -174,14 +194,16 @@ async def root():
             "health": "/health",
             "simple_health": "/simple-health",
             "main": "/hackrx/run",
-            "api_stats": "/api-stats"
+            "api_stats": "/api-stats",
+            "cleanup_session": "/cleanup-session"
         },
         "features": [
             "PDF document processing",
             "Semantic search with embeddings",
             "Question answering with Gemini",
             "Multiple API key fallback support",
-            "Multi-model fallback (gemini-1.5-flash → gemma-3-12b-it → gemma-3-4b-it)"
+            "Multi-model fallback (gemini-1.5-flash → gemma-3-12b-it → gemma-3-4b-it)",
+            "Pinecone vector storage with session management"
         ]
     }
 
