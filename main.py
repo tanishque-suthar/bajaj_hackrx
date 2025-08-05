@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 from models import HackRXRequest, HackRXResponse, HealthResponse
 from core.document import DocumentProcessor, get_document_stats
-from core.rag import RAGService, create_rag_service
+from core.rag import RAGService, get_rag_service
 import logging
 
 # Load environment variables
@@ -30,7 +30,8 @@ async def lifespan(app: FastAPI):
         logger.info("DocumentProcessor initialized successfully")
         
         logger.info("Initializing RAG service...")
-        app.state.rag_service = create_rag_service()
+        # Use the new factory function that supports hybrid search
+        app.state.rag_service = get_rag_service()
         logger.info("RAG service initialized successfully")
         
         logger.info("All services initialized successfully.")
@@ -159,8 +160,15 @@ async def process_hackrx_request(
         )
 
     try:
-        logger.info(f"Processing request with {len(request.questions)} questions")
-        logger.info(f"Document URL: {request.documents}")
+        # === REQUEST SUMMARY ===
+        logger.info("=" * 80)
+        logger.info("📋 REQUEST SUMMARY")
+        logger.info("=" * 80)
+        logger.info(f"📄 Document URL: {request.documents}")
+        logger.info(f"❓ Number of Questions: {len(request.questions)}")
+        for i, question in enumerate(request.questions, 1):
+            logger.info(f"❓ Q{i}: {question}")
+        logger.info("=" * 80)
 
         # Step 1: Process document
         logger.info("Step 1: Processing document...")
@@ -173,6 +181,18 @@ async def process_hackrx_request(
         # Step 2: Answer questions using RAG
         logger.info("Step 2: Answering questions using RAG...")
         answers = await rag_service.answer_multiple_questions(request.questions, document_chunks)
+
+        # === RESPONSE SUMMARY ===
+        logger.info("=" * 80)
+        logger.info("🤖 RESPONSE SUMMARY")
+        logger.info("=" * 80)
+        logger.info(f"📄 Document: {request.documents}")
+        logger.info(f"✅ Questions Processed: {len(request.questions)}")
+        for i, (question, answer) in enumerate(zip(request.questions, answers), 1):
+            logger.info(f"❓ Q{i}: {question}")
+            logger.info(f"🤖 A{i}: {answer}")
+            logger.info("-" * 40)
+        logger.info("=" * 80)
 
         logger.info("Request processed successfully")
         return HackRXResponse(answers=answers)

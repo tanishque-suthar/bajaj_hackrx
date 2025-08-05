@@ -11,6 +11,8 @@ import asyncio
 import uuid
 import time
 from core.api_key_manager import HuggingFaceAPIKeyManager, GeminiAPIKeyManager, ModelManager, PineconeAPIKeyManager
+from core.advanced_hybrid import AdvancedHybridRAGService, create_advanced_hybrid_rag_service
+from core.hybrid_config import HybridSearchConfig
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -539,27 +541,62 @@ ANSWER:"""
     async def answer_multiple_questions(self, questions: List[str], chunks: List[str]) -> List[str]:
         """Answer multiple questions efficiently with automatic cleanup"""
         try:
-            logger.info(f"Processing {len(questions)} questions with Gemini")
+            logger.info("=" * 80)
+            logger.info(f"📚 PROCESSING {len(questions)} QUESTIONS WITH TRADITIONAL RAG")
+            logger.info("=" * 80)
+            logger.info(f"📄 Document chunks: {len(chunks)}")
+            logger.info(f"🔍 Search mode: Traditional (Dense only)")
+            logger.info(f"⚙️ Config: {self.top_k} top-k results")
+            
             # Build vector store once for all questions
             await self.build_vector_store(chunks)
             
-            tasks = [self.answer_question(q, chunks) for q in questions]
-            answers = await asyncio.gather(*tasks, return_exceptions=True)
-            
+            # Process questions with detailed logging
             final_answers = []
-            for i, result in enumerate(answers):
-                if isinstance(result, Exception):
-                    logger.error(f"Error processing question {i+1}: {str(result)}")
-                    final_answers.append("Sorry, an error occurred for this question.")
-                else:
-                    final_answers.append(result)
+            for i, question in enumerate(questions, 1):
+                logger.info("-" * 60)
+                logger.info(f"🔍 PROCESSING QUESTION {i}/{len(questions)}")
+                logger.info(f"❓ Question: {question}")
+                logger.info("-" * 60)
+                
+                try:
+                    # Get relevant chunks
+                    start_time = time.time()
+                    relevant_chunks = await self.retrieve_relevant_chunks(question)
+                    retrieval_time = time.time() - start_time
+                    
+                    logger.info(f"⏱️ Retrieval time: {retrieval_time:.2f}s")
+                    logger.info(f"📄 Retrieved {len(relevant_chunks)} relevant chunks")
+                    
+                    # Log top retrieved chunks
+                    if relevant_chunks:
+                        logger.info("🔝 Top retrieved chunks:")
+                        for j, chunk in enumerate(relevant_chunks[:3], 1):
+                            score = chunk.get('score', 0)
+                            logger.info(f"   {j}. Score: {score:.3f} - {chunk['chunk'][:150]}...")
+                    
+                    # Generate answer
+                    start_time = time.time()
+                    answer = self.generate_answer(question, relevant_chunks)
+                    generation_time = time.time() - start_time
+                    
+                    logger.info(f"⏱️ Generation time: {generation_time:.2f}s")
+                    logger.info(f"🤖 Generated Answer: {answer}")
+                    
+                    final_answers.append(answer)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing question {i}: {str(e)}")
+                    error_answer = "Sorry, an error occurred for this question."
+                    final_answers.append(error_answer)
+                    logger.info(f"🤖 Error Answer: {error_answer}")
             
             # Automatic cleanup after processing all questions (if enabled)
             if self.auto_cleanup:
                 try:
-                    logger.info("Automatically cleaning up vectors after request completion")
+                    logger.info("🧹 Automatically cleaning up vectors after request completion")
                     self.cleanup_session()
-                    logger.info("Vectors cleaned up successfully")
+                    logger.info("✅ Vectors cleaned up successfully")
                 except Exception as cleanup_error:
                     logger.warning(f"Failed to cleanup vectors (non-critical): {str(cleanup_error)}")
             else:
@@ -658,3 +695,30 @@ def create_rag_service() -> RAGService:
     # Read auto-cleanup setting from environment
     auto_cleanup = os.getenv("AUTO_CLEANUP_VECTORS", "True").lower() in ("true", "1", "yes", "on")
     return RAGService(auto_cleanup=auto_cleanup)
+
+
+def create_hybrid_rag_service() -> AdvancedHybridRAGService:
+    """Factory function to create Advanced Hybrid RAG service"""
+    return create_advanced_hybrid_rag_service()
+
+
+def get_rag_service(use_hybrid: bool = None) -> RAGService:
+    """
+    Get RAG service based on configuration
+    
+    Args:
+        use_hybrid: If True, use hybrid search. If False, use traditional RAG.
+                   If None, read from environment variable ENABLE_HYBRID_SEARCH
+    
+    Returns:
+        RAGService or AdvancedHybridRAGService instance
+    """
+    if use_hybrid is None:
+        use_hybrid = os.getenv("ENABLE_HYBRID_SEARCH", "False").lower() in ("true", "1", "yes", "on")
+    
+    if use_hybrid:
+        logger.info("🚀 Creating Advanced Hybrid RAG Service (Dense + Sparse Search)")
+        return create_hybrid_rag_service()
+    else:
+        logger.info("📚 Creating Traditional RAG Service (Dense Search Only)")
+        return create_rag_service()

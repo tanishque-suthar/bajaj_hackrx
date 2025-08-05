@@ -24,26 +24,47 @@ class DocumentProcessor:
         Returns list of text chunks
         """
         try:
-            logger.info(f"Starting document processing for URL: {url}")
+            logger.info("=" * 80)
+            logger.info("📄 DOCUMENT PROCESSING STARTED")
+            logger.info("=" * 80)
+            logger.info(f"🔗 URL: {url}")
             
             # Step 1: Download document
+            logger.info("📥 Step 1: Downloading document...")
             document_content = await self._download_document(url)
             
             # Step 2: Detect file type and extract text
+            logger.info("🔍 Step 2: Detecting file type and extracting text...")
             file_type = self._detect_file_type(url, document_content)
+            logger.info(f"📋 Detected file type: {file_type.upper()}")
+            
             raw_text = self._extract_text(document_content, file_type)
+            logger.info(f"📝 Extracted text length: {len(raw_text)} characters")
             
             # Step 3: Clean and preprocess
+            logger.info("🧹 Step 3: Cleaning and preprocessing text...")
             cleaned_text = self._clean_and_preprocess(raw_text)
+            logger.info(f"✨ Cleaned text length: {len(cleaned_text)} characters")
             
             # Step 4: Create chunks
+            logger.info(f"📦 Step 4: Creating chunks (size: {self.chunk_size}, overlap: {self.chunk_overlap})...")
             chunks = self._create_chunks(cleaned_text)
             
-            logger.info(f"Document processed successfully. Created {len(chunks)} chunks")
+            logger.info("=" * 80)
+            logger.info("✅ DOCUMENT PROCESSING COMPLETED")
+            logger.info(f"📊 Final Stats:")
+            logger.info(f"   📄 Document: {url}")
+            logger.info(f"   📋 File Type: {file_type.upper()}")
+            logger.info(f"   📦 Total Chunks: {len(chunks)}")
+            logger.info(f"   📝 Raw Text: {len(raw_text):,} chars")
+            logger.info(f"   ✨ Cleaned Text: {len(cleaned_text):,} chars")
+            logger.info(f"   📏 Avg Chunk Size: {len(cleaned_text) // len(chunks) if chunks else 0} chars")
+            logger.info("=" * 80)
+            
             return chunks
             
         except Exception as e:
-            logger.error(f"Error processing document: {str(e)}")
+            logger.error(f"❌ Error processing document: {str(e)}")
             raise Exception(f"Failed to process document: {str(e)}")
     
     async def _download_document(self, url: str) -> bytes:

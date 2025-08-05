@@ -1,24 +1,27 @@
 # HackRX LLM Query-Retrieval System
 
-An intelligent document processing and question answering system built with FastAPI, featuring PDF document processing, semantic search with embeddings, and LLM-powered question answering using Google's Gemma model.
+An intelligent document processing and question answering system built with FastAPI, featuring PDF document processing, **hybrid search** (dense + sparse vectors), and LLM-powered question answering using Google's Gemma model.
 
 ## Features
 
 - **PDF & DOCX Document Processing**: Download and extract text from PDF and DOCX documents via URL
 - **Intelligent Text Chunking**: Smart text segmentation with overlapping chunks for better context preservation
+- **🚀 Hybrid Search**: Advanced retrieval combining semantic (dense) and lexical (sparse) search for optimal relevance
 - **Semantic Search**: Vector-based document retrieval using sentence transformers and Pinecone
-- **LLM Question Answering**: Powered by Google's Gemma 3n model for accurate, contextual responses
+- **LLM Question Answering**: Powered by Google's Gemma models for accurate, contextual responses
 - **Answer Post-processing**: Intelligent cleaning and formatting of AI-generated responses
 - **RESTful API**: Clean, documented API endpoints with authentication
 - **Insurance Domain Optimized**: Specifically tuned for insurance policy document analysis
+- **Automatic Reranking**: Uses Pinecone's reranking models for unified relevance scoring
 
 ## Technology Stack
 
 - **Backend**: FastAPI (Python 3.8+)
 - **Document Processing**: PyMuPDF (fitz) for PDF text extraction, python-docx for DOCX processing
-- **Embeddings**: SentenceTransformers with all-MiniLM-L6-v2 model
-- **Vector Database**: Pinecone for efficient similarity search and persistent storage
-- **LLM**: Google Gemma 3n via Google AI API
+- **Embeddings**: SentenceTransformers with all-MiniLM-L6-v2 model + Pinecone integrated models
+- **Vector Database**: Pinecone with separate dense and sparse indexes for hybrid search
+- **LLM**: Google Gemma models via Google AI API
+- **Reranking**: Pinecone's BGE reranker for optimal result ordering
 
 ## Prerequisites
 
@@ -49,14 +52,64 @@ An intelligent document processing and question answering system built with Fast
 4. **Set up environment variables**
    Create a `.env` file in the root directory:
    ```env
+   # Basic Configuration
    GOOGLE_API_KEY=your_google_ai_api_key_here
    API_TOKEN=your_bearer_token_here
    PINECONE_API_KEY=your_pinecone_api_key_here
-   PINECONE_ENVIRONMENT=us-east-1-aws
-   PINECONE_INDEX_NAME=bajaj-hackrx-index
+   PINECONE_ENVIRONMENT=us-east-1
+   
+   # Hybrid Search Configuration (NEW!)
+   ENABLE_HYBRID_SEARCH=True                    # Enable hybrid search
+   PINECONE_INDEX_BASE_NAME=bajaj-hackrx       # Base name for indexes
+   HYBRID_TOP_K_PER_INDEX=40                   # Results per index
+   HYBRID_FINAL_TOP_K=10                       # Final results after reranking
+   HYBRID_ENABLE_RERANKING=True                # Enable reranking
+   
+   # Optional: Multiple API Keys for better rate limiting
+   HF_API_TOKENS=token1,token2,token3
+   GEMINI_API_TOKENS=key1,key2,key3
    ```
 
+## Hybrid Search Architecture
+
+The system now supports **hybrid search** which combines:
+
+### 🔍 Dense Search (Semantic)
+- Uses vector embeddings to understand meaning and context
+- Great for conceptual queries like "payment terms" → finds "premium due dates"
+- Powered by Pinecone's `llama-text-embed-v2` model
+
+### 🔤 Sparse Search (Lexical) 
+- Uses keyword matching for exact term retrieval
+- Perfect for specific terminology like "30 days" or "deductible"
+- Powered by Pinecone's `pinecone-sparse-english-v0` model
+
+### 🎯 Automatic Reranking
+- Combines dense and sparse results using `bge-reranker-v2-m3`
+- Provides unified relevance scoring
+- Deduplicates and optimizes result ordering
+
+### 🔄 Search Flow
+1. Query sent to both dense and sparse indexes (40 results each)
+2. Results merged and deduplicated 
+3. Reranked by relevance using Pinecone's reranking model
+4. Top 10 most relevant chunks returned to LLM
+
 ## Usage
+
+### Testing Hybrid Search
+
+Before starting the main application, you can test the hybrid search functionality:
+
+```bash
+python test_hybrid_search.py
+```
+
+This will demonstrate:
+- Dense vs sparse search results
+- Reranking effectiveness  
+- Performance statistics
+- Comparison with traditional search
 
 ### Starting the Server
 
@@ -65,6 +118,13 @@ python main.py
 ```
 
 The API will be available at `http://localhost:8000`
+
+### Search Mode Selection
+
+The system automatically uses hybrid search if `ENABLE_HYBRID_SEARCH=True` in your `.env` file:
+
+- **Hybrid Mode** (Recommended): Dense + Sparse + Reranking
+- **Traditional Mode**: Dense search only (backward compatible)
 
 ### API Documentation
 
@@ -95,7 +155,7 @@ POST /hackrx/run
 }
 ```
 
-**Note**: The system now supports both PDF (.pdf) and DOCX (.docx) documents. File type is automatically detected from the URL extension or file content.
+**Note**: The system now supports both PDF (.pdf) and DOCX (.docx) documents. File type is automatically detected from the URL extension or file content. With hybrid search enabled, you'll get more comprehensive and accurate results.
 
 **Headers:**
 ```http
