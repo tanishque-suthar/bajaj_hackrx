@@ -285,20 +285,20 @@ class AdvancedHybridRAGService:
 
     def _create_hybrid_rag_prompt(self, query: str, context: str) -> str:
         """Create enhanced prompt for hybrid RAG"""
-        prompt = f"""You are an expert insurance policy analyst with access to advanced hybrid search results. Your task is to provide a precise and factual answer based ONLY on the provided policy sections, which have been retrieved using both semantic and lexical search for maximum relevance.
+        prompt = f"""You are a precision-focused AI analyst. Your task is to answer the question with extreme accuracy based ONLY on the provided POLICY SECTIONS.
 
-POLICY SECTIONS (Retrieved via Hybrid Search):
+POLICY SECTIONS:
 {context}
 
 QUESTION: {query}
 
 INSTRUCTIONS:
-1. Answer the question using only the information from the 'POLICY SECTIONS' above.
-2. The sections are ordered by relevance - prioritize information from higher-ranked sections.
-3. Extract specific facts, such as time periods (e.g., 30 days, 24 months), monetary values, percentages, and conditions.
+1. The sections are ordered by relevance - prioritize information from higher-ranked sections.
+2. Extract specific facts, such as time periods (e.g., 30 days, 24 months), monetary values, percentages, and conditions.
+3. You must cite your source at the end of the answer, like this: (Source: SECTION 1).
 4. If multiple sections provide related information, synthesize them coherently.
-5. If the answer cannot be found in the provided sections, respond with exactly: "The answer cannot be found in the provided policy sections."
-6. Be direct and concise while being comprehensive.
+5. Your answer must be a maximum of three (3) sentences.
+6. If the answer cannot be found, respond with exactly: "The answer cannot be found in the provided policy sections."
 7. Answer in clean, continuous prose without bullet points or formatting marks.
 
 ANSWER:"""
