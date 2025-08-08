@@ -10,3 +10,7 @@ huggingface_hub
 redis
 python-multipart
 python-dotenv
+sentence-transformers
+transformers
+torch
+numpy

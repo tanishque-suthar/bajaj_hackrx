@@ -6,40 +6,49 @@ from typing import List, Dict
 import logging
 import os
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
 import asyncio
-from core.api_key_manager import HuggingFaceAPIKeyManager, GeminiAPIKeyManager, ModelManager
+from sentence_transformers import SentenceTransformer, CrossEncoder
+import torch
+from core.api_key_manager import GeminiAPIKeyManager, ModelManager
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 class RAGService:
-    """RAG service using Hugging Face Inference API for embeddings and Gemini for generation"""
+    """Hybrid RAG service using local embeddings/reranking and Gemini for generation"""
     
     def __init__(
         self,
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
-        top_k: int = 5,
-        gemma_model: str = "gemini-1.5-flash"
+        rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        top_k: int = 8,
+        rerank_top_k: int = 4,
+        gemma_model: str = "gemini-1.5-flash",
+        device: str = "cpu",
+        enable_reranking: bool = True,  # Option to disable reranking entirely
+        rerank_batch_size: int = 4      # Smaller batches for CPU
     ):
         self.top_k = top_k
+        self.rerank_top_k = max(rerank_top_k, top_k)  # Retrieve more for reranking
         self.gemma_model = gemma_model
         self.embedding_model = embedding_model
+        self.rerank_model = rerank_model
+        self.device = device
+        self.enable_reranking = enable_reranking
+        self.rerank_batch_size = rerank_batch_size
         
-        # --- Initialize Hugging Face API Key Manager ---
-        try:
-            self.hf_key_manager = HuggingFaceAPIKeyManager()
-            logger.info(f"Initialized HF API Key Manager with {len(self.hf_key_manager.api_keys)} keys")
-        except Exception as e:
-            logger.error(f"Failed to initialize HF API Key Manager: {str(e)}")
-            # Fallback to single key approach
-            hf_api_token = os.getenv("HF_API_TOKEN")
-            if not hf_api_token:
-                raise ValueError("Neither HF_API_TOKENS nor HF_API_TOKEN found in environment variables")
-            self.hf_key_manager = None
-            self.hf_client = InferenceClient(api_key=hf_api_token)
-            logger.warning("Using fallback single HF API token")
+        # Set device based on availability (optimized for i5 10th gen + integrated GPU)
+        if torch.cuda.is_available():
+            self.device = "cuda"
+            logger.info("CUDA available, using GPU")
+        else:
+            self.device = "cpu"
+            logger.info("Using CPU for local inference")
         
-        # --- Initialize Gemini API Key Manager ---
+        # Initialize local models (lazy loading)
+        self.embedding_model_instance = None
+        self.rerank_model_instance = None
+        
+        # --- Initialize Gemini API Key Manager (keep only this for generation) ---
         try:
             self.gemini_key_manager = GeminiAPIKeyManager()
             logger.info(f"Initialized Gemini API Key Manager with {len(self.gemini_key_manager.api_keys)} keys")
@@ -55,12 +64,13 @@ class RAGService:
         # --- Initialize Model Manager ---
         self.gemini_models = [
             "gemini-1.5-flash",
-            "gemma-3-12b-it", 
-            "gemma-3-4b-it"
+            "gemma-2-9b-it", 
+            "gemma-2-2b-it"
         ]
         self.model_manager = ModelManager(self.gemini_models, rate_limit_cooldown=120)
         
-        self.embedding_dim = 384  # Dimension for all-MiniLM-L6-v2
+        # Determine embedding dimensions based on model
+        self.embedding_dim = self._get_embedding_dimension()
         
         # --- Initialize Google AI Generative Model (Lazy Loading) ---
         self.model = None
@@ -68,6 +78,48 @@ class RAGService:
         
         self.vector_store = None
         self.chunks = []
+
+    def _get_embedding_dimension(self) -> int:
+        """Get embedding dimension based on model name"""
+        model_dims = {
+            "sentence-transformers/all-MiniLM-L6-v2": 384,
+            "sentence-transformers/all-mpnet-base-v2": 768,
+            "sentence-transformers/e5-base-v2": 768,
+            "sentence-transformers/paraphrase-MiniLM-L6-v2": 384,
+        }
+        return model_dims.get(self.embedding_model, 384)  # Default to 384
+
+    def _initialize_local_models(self):
+        """Initialize local embedding and reranking models lazily"""
+        if self.embedding_model_instance is None:
+            logger.info(f"Loading local embedding model: {self.embedding_model}")
+            try:
+                # For i5 10th gen, use CPU with optimized settings
+                self.embedding_model_instance = SentenceTransformer(
+                    self.embedding_model, 
+                    device=self.device
+                )
+                # Enable optimizations for CPU inference
+                if self.device == "cpu":
+                    self.embedding_model_instance.eval()
+                    torch.set_num_threads(4)  # Optimize for i5 quad-core
+                
+                logger.info(f"✅ Embedding model loaded on {self.device}")
+            except Exception as e:
+                logger.error(f"Failed to load embedding model: {str(e)}")
+                raise
+        
+        if self.rerank_model_instance is None:
+            logger.info(f"Loading local reranking model: {self.rerank_model}")
+            try:
+                self.rerank_model_instance = CrossEncoder(
+                    self.rerank_model, 
+                    device=self.device
+                )
+                logger.info(f"✅ Reranking model loaded on {self.device}")
+            except Exception as e:
+                logger.error(f"Failed to load reranking model: {str(e)}")
+                raise
 
     def _initialize_gemini_model(self):
         """Initialize Gemini model lazily with fallback support"""
@@ -97,124 +149,171 @@ class RAGService:
             )
 
     async def create_embeddings(self, texts: List[str]) -> np.ndarray:
-        """Create embeddings for a list of texts using Hugging Face Inference API with fallback"""
-        if not self.hf_key_manager:
-            # Fallback to single client
-            return await self._create_embeddings_single_client(texts)
-        
-        logger.info(f"Creating embeddings for {len(texts)} texts via Hugging Face API with fallback")
-        
-        max_attempts = len(self.hf_key_manager.api_keys)
-        last_error = None
-        
-        for attempt in range(max_attempts):
-            api_key = self.hf_key_manager.get_next_available_key()
-            
-            if not api_key:
-                logger.error("No available Hugging Face API keys")
-                break
-            
-            try:
-                # Create client with current API key
-                client = InferenceClient(api_key=api_key)
-                
-                # Make API call
-                embeddings = client.feature_extraction(
-                    text=texts,
-                    model=self.embedding_model
-                )
-                
-                # Success - mark key as successful and return results
-                self.hf_key_manager.mark_key_successful(api_key)
-                embeddings_array = np.array(embeddings, dtype=np.float32)
-                logger.info(f"Created embeddings with shape: {embeddings_array.shape}")
-                return embeddings_array
-                
-            except Exception as e:
-                error_msg = str(e)
-                last_error = e
-                
-                logger.warning(f"HF API attempt {attempt + 1} failed with key {self.hf_key_manager._mask_key(api_key)}: {error_msg}")
-                
-                # Check if it's a rate limit error
-                if self.hf_key_manager.is_rate_limit_error(error_msg):
-                    self.hf_key_manager.mark_key_rate_limited(api_key)
-                    logger.info(f"Rate limit detected, trying next key...")
-                    continue
-                
-                # Check if it's an authentication error
-                elif self.hf_key_manager.is_auth_error(error_msg):
-                    self.hf_key_manager.mark_key_failed(api_key)
-                    logger.warning(f"Authentication error, marking key as failed and trying next...")
-                    continue
-                
-                # For other errors, try next key without marking as failed
-                else:
-                    logger.warning(f"Unknown error, trying next key: {error_msg}")
-                    continue
-        
-        # All attempts failed
-        stats = self.hf_key_manager.get_statistics()
-        logger.error(f"All Hugging Face API keys exhausted. Stats: {stats}")
-        
-        if last_error:
-            raise Exception(f"All Hugging Face API keys failed. Last error: {str(last_error)}")
-        else:
-            raise Exception("All Hugging Face API keys are unavailable")
-    
-    async def _create_embeddings_single_client(self, texts: List[str]) -> np.ndarray:
-        """Fallback method for single client (backward compatibility)"""
+        """Create embeddings using local SentenceTransformer model"""
         try:
-            logger.info(f"Creating embeddings for {len(texts)} texts via single HF client")
-            embeddings = self.hf_client.feature_extraction(
-                text=texts,
-                model=self.embedding_model
-            )
-            embeddings_array = np.array(embeddings, dtype=np.float32)
-            logger.info(f"Created embeddings with shape: {embeddings_array.shape}")
-            return embeddings_array
+            self._initialize_local_models()
+            
+            logger.info(f"Creating local embeddings for {len(texts)} texts using {self.embedding_model}")
+            
+            # Use asyncio to run CPU-intensive embedding creation in thread pool
+            loop = asyncio.get_event_loop()
+            
+            def _create_embeddings_sync():
+                with torch.no_grad():  # Save memory and speed up inference
+                    embeddings = self.embedding_model_instance.encode(
+                        texts,
+                        convert_to_numpy=True,
+                        show_progress_bar=len(texts) > 10,  # Show progress for large batches
+                        batch_size=32 if self.device == "cpu" else 64,  # Optimize batch size for CPU
+                        normalize_embeddings=True  # Normalize for cosine similarity
+                    )
+                return embeddings
+            
+            # Run in thread pool to avoid blocking the event loop
+            embeddings_array = await loop.run_in_executor(None, _create_embeddings_sync)
+            
+            logger.info(f"✅ Created local embeddings with shape: {embeddings_array.shape}")
+            return embeddings_array.astype(np.float32)
+            
         except Exception as e:
-            logger.error(f"Error creating Hugging Face embeddings: {str(e)}")
-            raise Exception(f"Error creating Hugging Face embeddings: {str(e)}")
+            logger.error(f"Error creating local embeddings: {str(e)}")
+            raise Exception(f"Error creating local embeddings: {str(e)}")
 
     async def build_vector_store(self, chunks: List[str]) -> None:
-        """Build FAISS vector store from document chunks"""
+        """Build FAISS vector store from document chunks using local embeddings"""
         try:
-            logger.info("Building vector store from chunks")
+            logger.info(f"Building local vector store from {len(chunks)} chunks")
             self.chunks = chunks
             
             chunk_embeddings = await self.create_embeddings(chunks)
             
+            # Use IndexFlatIP for cosine similarity (embeddings are already normalized)
             self.vector_store = faiss.IndexFlatIP(self.embedding_dim)
-            faiss.normalize_L2(chunk_embeddings)
             self.vector_store.add(chunk_embeddings)
             
-            logger.info(f"Vector store built with {len(chunks)} chunks")
+            logger.info(f"✅ Vector store built locally with {len(chunks)} chunks")
         except Exception as e:
             raise Exception(f"Error building vector store: {str(e)}")
 
     async def retrieve_relevant_chunks(self, query: str) -> List[Dict]:
-        """Retrieve top-k relevant chunks for a query"""
+        """Retrieve and optionally rerank relevant chunks using local models"""
         try:
             if not self.vector_store or not self.chunks:
                 raise ValueError("Vector store not initialized. Call build_vector_store first.")
             
             logger.info(f"Retrieving relevant chunks for query: {query[:50]}...")
             
+            # Step 1: Initial retrieval
+            if self.enable_reranking:
+                # Retrieve more candidates for reranking
+                retrieve_k = self.rerank_top_k
+            else:
+                # Retrieve exactly what we need
+                retrieve_k = self.top_k
+            
             query_embedding = await self.create_embeddings([query])
-            faiss.normalize_L2(query_embedding)
+            scores, indices = self.vector_store.search(query_embedding, retrieve_k)
             
-            scores, indices = self.vector_store.search(query_embedding, self.top_k)
-            
-            results = [
+            initial_results = [
                 {"chunk": self.chunks[idx], "score": float(score), "index": int(idx)}
                 for score, idx in zip(scores[0], indices[0]) if idx < len(self.chunks)
             ]
             
-            logger.info(f"Retrieved {len(results)} relevant chunks")
-            return results
+            logger.info(f"📊 Initial retrieval: {len(initial_results)} chunks")
+            
+            # Step 2: Optional reranking with performance optimizations
+            if self.enable_reranking and len(initial_results) > self.rerank_top_k:
+                logger.info("🔄 Applying fast local reranking...")
+                start_time = asyncio.get_event_loop().time()
+                
+                # Smart reranking: only rerank if we have enough candidates
+                if len(initial_results) <= 3:  # If we have 3 or fewer, skip reranking
+                    logger.info("⚡ Skipping reranking (too few candidates for meaningful improvement)")
+                    final_results = initial_results[:self.top_k]
+                else:
+                    reranked_results = await self._rerank_chunks_fast(query, initial_results)
+                    final_results = reranked_results[:self.top_k]
+                
+                end_time = asyncio.get_event_loop().time()
+                logger.info(f"✅ Reranking completed in {end_time - start_time:.2f}s, selected top {len(final_results)} chunks")
+            else:
+                final_results = initial_results[:self.top_k]
+                if not self.enable_reranking:
+                    logger.info("⚡ Reranking disabled - using semantic similarity only")
+                else:
+                    logger.info("⏭️ Skipping reranking (not enough candidates)")
+            
+            return final_results
+            
         except Exception as e:
             raise Exception(f"Error retrieving relevant chunks: {str(e)}")
+
+    async def _rerank_chunks_fast(self, query: str, chunks: List[Dict]) -> List[Dict]:
+        """Fast reranking with optimizations for i5 10th gen CPU"""
+        try:
+            self._initialize_local_models()
+            
+            # Optimization 1: Truncate long chunks to speed up processing
+            max_chunk_length = 512  # Limit chunk length
+            truncated_pairs = []
+            
+            for chunk in chunks:
+                chunk_text = chunk['chunk']
+                if len(chunk_text) > max_chunk_length:
+                    # Truncate but try to keep complete sentences
+                    chunk_text = chunk_text[:max_chunk_length]
+                    last_period = chunk_text.rfind('.')
+                    if last_period > max_chunk_length * 0.7:  # Keep if period is reasonably close to end
+                        chunk_text = chunk_text[:last_period + 1]
+                
+                truncated_pairs.append((query, chunk_text))
+            
+            loop = asyncio.get_event_loop()
+            
+            def _rerank_sync():
+                with torch.no_grad():
+                    # Optimization 2: Use smaller batch size for CPU
+                    rerank_scores = self.rerank_model_instance.predict(
+                        truncated_pairs,
+                        show_progress_bar=False,
+                        batch_size=self.rerank_batch_size,  # Smaller batches
+                        convert_to_numpy=True,  # Faster than tensor operations
+                        apply_softmax=False     # Skip softmax for speed (we only need rankings)
+                    )
+                return rerank_scores
+            
+            # Run reranking in thread pool
+            rerank_scores = await loop.run_in_executor(None, _rerank_sync)
+            
+            # Update chunks with rerank scores and sort
+            for chunk, rerank_score in zip(chunks, rerank_scores):
+                chunk['rerank_score'] = float(rerank_score)
+            
+            # Sort by rerank score (higher is better)
+            reranked_chunks = sorted(chunks, key=lambda x: x['rerank_score'], reverse=True)
+            
+            logger.info(f"⚡ Fast-reranked {len(chunks)} chunks (batch_size={self.rerank_batch_size})")
+            return reranked_chunks
+            
+        except Exception as e:
+            logger.error(f"Error in fast reranking: {str(e)}")
+            # Fallback to original retrieval scores
+            logger.info("⚠️ Falling back to semantic similarity scores")
+            return sorted(chunks, key=lambda x: x['score'], reverse=True)
+
+    async def _rerank_chunks(self, query: str, chunks: List[Dict]) -> List[Dict]:
+        """Original reranking method (kept for backward compatibility)"""
+        return await self._rerank_chunks_fast(query, chunks)
+
+    def set_reranking_enabled(self, enabled: bool):
+        """Enable or disable reranking for performance tuning"""
+        self.enable_reranking = enabled
+        logger.info(f"🔧 Reranking {'enabled' if enabled else 'disabled'}")
+
+    def set_rerank_batch_size(self, batch_size: int):
+        """Adjust reranking batch size for performance tuning"""
+        self.rerank_batch_size = batch_size
+        logger.info(f"🔧 Reranking batch size set to {batch_size}")
             
     def generate_answer(self, query: str, relevant_chunks: List[Dict]) -> str:
         """Generate answer using Google Gemini with model-first fallback strategy"""
@@ -222,12 +321,17 @@ class RAGService:
             # Fallback to single client
             return self._generate_answer_single_client(query, relevant_chunks)
         
-        logger.info("Generating answer using Google Gemini with model-first fallback")
+        logger.info("🤖 Generating answer using Google Gemini with model-first fallback")
         
-        context = "\n\n".join([
-            f"[Document Section {i+1}]:\n{chunk['chunk']}" 
-            for i, chunk in enumerate(relevant_chunks)
-        ])
+        # Create context with rerank scores if available
+        context_parts = []
+        for i, chunk in enumerate(relevant_chunks):
+            score_info = ""
+            if 'rerank_score' in chunk:
+                score_info = f" (relevance: {chunk['rerank_score']:.3f})"
+            context_parts.append(f"[Document Section {i+1}{score_info}]:\n{chunk['chunk']}")
+        
+        context = "\n\n".join(context_parts)
         prompt = self._create_gemma_prompt(query, context)
         
         # Model-first strategy: All Keys try flash → All Keys try 12b → All Keys try 4b
@@ -329,7 +433,7 @@ class RAGService:
 
     def _create_gemma_prompt(self, query: str, context: str) -> str:
         """Create prompt for Gemini model"""
-        prompt = f"""You are a meticulous insurance policy analyst. Your task is to provide a precise and factual answer to the question based ONLY on the provided policy sections.
+        prompt = f"""You are a precision-focused AI analyst. Your task is to answer the question with extreme accuracy based ONLY on the provided POLICY SECTIONS.
 
 POLICY SECTIONS:
 {context}
@@ -337,11 +441,13 @@ POLICY SECTIONS:
 QUESTION: {query}
 
 INSTRUCTIONS:
-1. Answer the question using only the information from the 'POLICY SECTIONS' above.
+1. The sections are ordered by relevance - prioritize information from higher-ranked sections.
 2. Extract specific facts, such as time periods (e.g., 30 days, 24 months), monetary values, percentages, and conditions.
-3. If the answer cannot be found in the provided sections, respond with exactly: "The answer cannot be found in the provided policy sections."
-4. Be direct and concise.
-5. Answer in clean, continuous prose without bullet points or formatting marks
+3. You must cite your source at the end of the answer, like this: (Source: SECTION 1).
+4. If multiple sections provide related information, synthesize them coherently.
+5. Your answer must be a maximum of three (3) sentences.
+6. If the answer cannot be found, respond with exactly: "The answer cannot be found in the provided policy sections."
+7. Answer in clean, continuous prose without bullet points or formatting marks.
 
 ANSWER:"""
         return prompt
@@ -406,18 +512,20 @@ ANSWER:"""
             return [f"Error processing questions: {str(e)}" for _ in questions]
 
     def get_api_key_statistics(self) -> Dict:
-        """Get statistics about API key usage and model usage for both services"""
+        """Get statistics about API key usage and model usage"""
         stats = {}
         
-        # Hugging Face statistics
-        if self.hf_key_manager:
-            stats["huggingface"] = self.hf_key_manager.get_statistics()
-        else:
-            stats["huggingface"] = {
-                "service": "HuggingFace",
-                "mode": "single_key_fallback",
-                "message": "Using single HF_API_TOKEN (no multi-key manager)"
+        # Local model information
+        stats["local_models"] = {
+            "embedding_model": self.embedding_model,
+            "rerank_model": self.rerank_model,
+            "device": self.device,
+            "embedding_dim": self.embedding_dim,
+            "models_loaded": {
+                "embeddings": self.embedding_model_instance is not None,
+                "reranking": self.rerank_model_instance is not None
             }
+        }
         
         # Gemini API key statistics
         if self.gemini_key_manager:
@@ -435,6 +543,17 @@ ANSWER:"""
         return stats
 
 
-def create_rag_service() -> RAGService:
-    """Factory function to create RAG service"""
-    return RAGService()
+def create_rag_service(fast_mode: bool = False) -> RAGService:
+    """Factory function to create hybrid RAG service with local embeddings/reranking
+    
+    Args:
+        fast_mode: If True, optimizes for speed over quality (smaller batches, fewer candidates)
+    """
+    if fast_mode:
+        return RAGService(
+            rerank_top_k=6,         # Fewer candidates to rerank
+            rerank_batch_size=4,    # Smaller batches for faster processing
+            enable_reranking=True   # Keep reranking but with optimizations
+        )
+    else:
+        return RAGService()  # Default settings
