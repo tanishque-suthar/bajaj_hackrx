@@ -1,12 +1,18 @@
+# Core dependencies
 fastapi
 uvicorn
 pydantic
-httpx
 pymupdf
 python-docx
 faiss-cpu
-google-generativeai
-huggingface_hub
-redis
 python-multipart
 python-dotenv
+
+# Local inference dependencies (with Qwen3-Embedding support)
+torch
+transformers>=4.51.0
+sentence-transformers>=2.7.0
+accelerate
+bitsandbytes
+psutil
+numpy

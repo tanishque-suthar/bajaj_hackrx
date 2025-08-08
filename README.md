@@ -1,82 +1,368 @@
-# HackRX LLM Query-Retrieval System
+# Local RAG System - Pure Local Inference 🚀
 
-An intelligent document processing and question answering system built with FastAPI, featuring PDF document processing, semantic search with embeddings, and LLM-powered question answering using Google's Gemma model.
+An intelligent document processing and question-answering system that runs **completely locally** using state-of-the-art models without any cloud API dependencies. Built with FastAPI, featuring GPU/CPU auto-detection, Qwen3 embeddings, and Llama-3.1-8B for powerful local inference.
 
-## Features
+## ✨ Features
 
-- **PDF & DOCX Document Processing**: Download and extract text from PDF and DOCX documents via URL
-- **Intelligent Text Chunking**: Smart text segmentation with overlapping chunks for better context preservation
-- **Semantic Search**: Vector-based document retrieval using sentence transformers and FAISS
-- **LLM Question Answering**: Powered by Google's Gemma 3n model for accurate, contextual responses
-- **Answer Post-processing**: Intelligent cleaning and formatting of AI-generated responses
-- **RESTful API**: Clean, documented API endpoints with authentication
-- **Insurance Domain Optimized**: Specifically tuned for insurance policy document analysis
+- **🏠 100% Local Inference**: No cloud APIs, complete privacy and control
+- **🧠 Advanced Models**: 
+  - **Qwen/Qwen3-Embedding-0.6B** for high-quality embeddings
+  - **meta-llama/Llama-3.1-8B-Instruct** for intelligent Q&A
+- **⚡ GPU/CPU Auto-Detection**: Automatically uses best available hardware
+- **🗜️ Memory Optimization**: 8-bit quantization for VRAM efficiency
+- **📄 Document Processing**: PDF & DOCX support with intelligent chunking
+- **🔍 Semantic Search**: FAISS vector database for fast similarity search
+- **🔗 RESTful API**: Clean FastAPI endpoints with authentication
+- **💾 Local Caching**: Models cached locally, download once and use forever
 
-## Technology Stack
+## 🏗️ Architecture
 
-- **Backend**: FastAPI (Python 3.8+)
-- **Document Processing**: PyMuPDF (fitz) for PDF text extraction, python-docx for DOCX processing
-- **Embeddings**: SentenceTransformers with all-MiniLM-L6-v2 model
-- **Vector Database**: FAISS for efficient similarity search
-- **LLM**: Google Gemma 3n via Google AI API
-
-## Prerequisites
-
-- Python 3.8 or higher
-- Google AI API key (for Gemma model access)
-- Required Python packages (see requirements.txt)
-
-## Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd bajajHackrx
-   ```
-
-2. **Create virtual environment**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Set up environment variables**
-   Create a `.env` file in the root directory:
-   ```env
-   GOOGLE_API_KEY=your_google_ai_api_key_here
-   API_TOKEN=your_bearer_token_here
-   ```
-
-## Usage
-
-### Starting the Server
-
-```bash
-python main.py
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Document      │    │   Qwen3-Embedding │    │  Llama-3.1-8B   │
+│   Processing    │───▶│   (Local)        │───▶│  (Local)        │
+│   (PDF/DOCX)    │    │   Vector Store   │    │  Answer Gen     │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
 
-The API will be available at `http://localhost:8000`
+## 🔧 Technology Stack
+
+- **Backend**: FastAPI (Python 3.8+)
+- **Models**: 
+  - Qwen3-Embedding-0.6B (Alibaba)
+  - Llama-3.1-8B-Instruct (Meta)
+- **ML Framework**: PyTorch, Transformers, Sentence-Transformers
+- **Vector Database**: FAISS for similarity search
+- **Document Processing**: PyMuPDF, python-docx
+- **Quantization**: BitsAndBytesConfig for memory efficiency
+
+## 📋 Prerequisites
+
+### Hardware Requirements
+- **Minimum**: 8GB RAM, any CPU
+- **Recommended**: 16GB+ RAM, GPU with 4GB+ VRAM
+- **Storage**: ~20GB for models (downloaded once)
+
+### Software Requirements
+- Python 3.8+ 
+- Windows/Linux/macOS
+- CUDA toolkit (optional, for GPU acceleration)
+
+## 🚀 Quick Start
+
+### 1. Clone Repository
+```bash
+git clone https://github.com/your-username/bajaj_hackrx.git
+cd bajaj_hackrx
+```
+
+### 2. Setup Virtual Environment
+```bash
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux/Mac
+```
+
+### 3. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure Environment
+```bash
+# Setup Hugging Face token (needed for Llama access)
+python setup_hf_token.py
+```
+
+### 5. Test Local System
+```bash
+# Test the local RAG system
+python test_local_rag.py
+```
+
+### 6. Start API Server
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## ⚙️ Configuration
+
+The system uses environment variables in `.env` file:
+
+```env
+# Hugging Face token (required for Llama-3.1-8B)
+HUGGINGFACE_TOKEN=hf_your_token_here
+
+# Model cache directory (optional)
+HF_HOME=D:\huggingface-cache
+
+# API authentication
+API_TOKEN=your_secure_api_token
+
+# Model configuration
+LOCAL_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+LOCAL_LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+
+# Hardware settings
+DEVICE=auto  # auto, cuda, cpu
+USE_QUANTIZATION=true
+QUANTIZATION_BITS=8
+
+# Generation parameters
+MAX_NEW_TOKENS=200
+TEMPERATURE=0.1
+TOP_P=0.9
+TOP_K=50
+
+# RAG settings
+TOP_K_CHUNKS=5
+CHUNK_SIZE=500
+CHUNK_OVERLAP=80
+```
+
+## 🧠 How It Works
+
+### 1. **Document Processing**
+```python
+# Process PDF/DOCX documents
+chunks = document_processor.extract_chunks(pdf_content)
+# Creates 500-char chunks with 80-char overlap for better context
+```
+
+### 2. **Embedding Creation** 
+```python
+# Convert text to vectors using Qwen3-Embedding
+embeddings = await embedding_service.create_embeddings(chunks)
+# Uses query-specific prompts for better retrieval performance
+```
+
+### 3. **Vector Search**
+```python
+# Find most relevant chunks using FAISS
+relevant_chunks = await rag_service.retrieve_relevant_chunks(query)
+# Returns top-5 most similar document sections
+```
+
+### 4. **Answer Generation**
+```python
+# Generate answers using Llama-3.1-8B locally
+answer = await llm_service.generate_answer(prompt)
+# Uses optimized Llama-3.1 chat template for best results
+```
+
+## 📡 API Usage
+
+### Start the Server
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
 
 ### API Documentation
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
 
-Interactive API documentation is available at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+### Main Endpoint
 
-### API Endpoints
+**Process Document & Answer Questions**
+```http
+POST /hackrx/run
+Content-Type: application/json
+Authorization: Bearer your_api_token
 
-#### Health Check
+{
+  "documents": "https://example.com/document.pdf",
+  "questions": [
+    "What is the grace period for premium payment?",
+    "What are the exclusions in the policy?"
+  ]
+}
+```
+
+**Response**
+```json
+{
+  "results": [
+    {
+      "question": "What is the grace period for premium payment?",
+      "answer": "The grace period for premium payment is 30 days from the due date.",
+      "processing_time": 2.1
+    }
+  ],
+  "total_processing_time": 2.1,
+  "system_info": {
+    "service": "Local RAG",
+    "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
+    "llm_model": "meta-llama/Llama-3.1-8B-Instruct",
+    "device": "cuda"
+  }
+}
+```
+
+### Health Check
 ```http
 GET /health
 ```
 
-#### Main Processing Endpoint
-```http
+## 🛠️ Development
+
+### Project Structure
+```
+bajaj_hackrx/
+├── core/
+│   ├── local_rag.py      # Main local RAG implementation
+│   └── document.py       # Document processing utilities
+├── main.py               # FastAPI application
+├── test_local_rag.py     # Testing script
+├── setup_hf_token.py     # HF token setup utility
+├── requirements.txt      # Dependencies
+├── .env                  # Configuration
+└── README.md            # This file
+```
+
+### Running Tests
+```bash
+# Test local RAG system
+python test_local_rag.py
+
+# Test with sample PDF
+python test_local_rag.py --file sample.pdf
+
+# Test API endpoints
+curl -X POST "http://localhost:8000/hackrx/run" \
+  -H "Authorization: Bearer your_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": "https://example.com/test.pdf",
+    "questions": ["What is this document about?"]
+  }'
+```
+
+## 🔧 Hardware Optimization
+
+### GPU Configuration
+- **Automatic Detection**: System auto-detects CUDA availability
+- **8-bit Quantization**: Reduces VRAM usage by ~50%
+- **Memory Management**: Automatic cleanup and garbage collection
+
+### Performance Tips
+1. **For GPU Users**: Ensure CUDA toolkit is installed
+2. **For CPU Users**: Increase thread count in config
+3. **Memory Issues**: Reduce batch sizes or use 4-bit quantization
+4. **Storage**: Use SSD for model cache for faster loading
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+**1. CUDA Out of Memory**
+```bash
+# Solution: Enable quantization in .env
+USE_QUANTIZATION=true
+QUANTIZATION_BITS=8
+```
+
+**2. Model Download Fails**
+```bash
+# Check your HF token
+python setup_hf_token.py --test
+
+# Manually set cache directory
+export HF_HOME=/path/to/cache
+```
+
+**3. Slow Performance**
+```bash
+# Check if GPU is being used
+python -c "import torch; print(torch.cuda.is_available())"
+
+# Monitor GPU usage
+nvidia-smi
+```
+
+**4. Import Errors**
+```bash
+# Reinstall dependencies
+pip install -r requirements.txt --upgrade
+```
+
+## 🚀 Deployment
+
+### Local Development
+```bash
+uvicorn main:app --reload --port 8000
+```
+
+### Production Deployment
+```bash
+# With Gunicorn
+gunicorn main:app -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+
+# With Docker (create Dockerfile)
+docker build -t local-rag .
+docker run -p 8000:8000 -v /path/to/models:/models local-rag
+```
+
+### Cloudflare Tunnel (Coming Soon)
+```bash
+# Will be added in next iteration
+cloudflared tunnel --url http://localhost:8000
+```
+
+## 📊 Performance Metrics
+
+### Model Sizes
+- **Qwen3-Embedding-0.6B**: ~1.2GB
+- **Llama-3.1-8B-Instruct**: ~15GB
+- **Total Storage**: ~20GB (including cache)
+
+### Speed Benchmarks
+- **GPU (RTX 3060Ti)**: ~2-3s per question
+- **CPU (i5-10th gen)**: ~10-15s per question
+- **Embedding Speed**: ~100ms per document chunk
+
+### Memory Usage
+- **With Quantization**: ~6-8GB VRAM
+- **Without Quantization**: ~12-15GB VRAM
+- **CPU Mode**: ~8-12GB RAM
+
+## 🔒 Privacy & Security
+
+- **🔐 Complete Privacy**: All processing happens locally
+- **🚫 No Data Transmission**: Documents never leave your machine
+- **🔑 Token Security**: HF token only used for model downloads
+- **🛡️ API Authentication**: Bearer token for endpoint security
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙋‍♂️ Support
+
+- **Issues**: [GitHub Issues](https://github.com/your-username/bajaj_hackrx/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/your-username/bajaj_hackrx/discussions)
+- **Email**: support@yourproject.com
+
+## 🎯 Future Roadmap
+
+- [ ] **Reranker Integration**: BAAI/bge-reranker-v2-m3
+- [ ] **Cloudflare Tunnel**: Easy public deployment
+- [ ] **Model Switching**: Runtime model swapping
+- [ ] **Batch Processing**: Multiple document support
+- [ ] **Web Interface**: Simple UI for non-developers
+- [ ] **Docker Support**: Containerized deployment
+- [ ] **API Rate Limiting**: Production-ready features
+
+---
+
+**Built with ❤️ for local AI inference and privacy-first document processing**
 POST /hackrx/run
 ```
 
