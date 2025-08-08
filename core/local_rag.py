@@ -41,17 +41,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LocalModelConfig:
-    """Configuration for local models - Using your requested models"""
-    # Your requested models
-    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"    # Qwen3 embedding model
-    llm_model: str = "meta-llama/Llama-3.1-8B-Instruct"   # Llama 3.1 for excellent QA
+    """Configuration for local models - All values from environment variables"""
+    # Model names (no defaults - must be provided)
+    embedding_model: str
+    llm_model: str
     
     # Hardware settings
     device: str = "auto"  # auto, cuda, cpu
     use_quantization: bool = True   # Enable quantization for large models
     quantization_bits: int = 8      # 8-bit quantization to fit in your VRAM
     
-    # Generation settings (optimized for Llama-3.1)
+    # Generation settings
     max_new_tokens: int = 256
     temperature: float = 0.2        # Lower for more focused answers
     top_p: float = 0.9
@@ -60,7 +60,7 @@ class LocalModelConfig:
     
     # RAG settings
     top_k_chunks: int = 5
-    embedding_dim: int = 1024  # Qwen3-Embedding-0.6B actual dimension
+    embedding_dim: int = 1024  # Will be updated dynamically based on actual model
 
 
 class LocalEmbeddingService:

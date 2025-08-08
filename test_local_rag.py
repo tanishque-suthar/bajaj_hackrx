@@ -1,6 +1,6 @@
 """
 Test script for Local RAG Service
-Tests Qwen/Qwen3-Embedding-0.6B + meta-llama/Llama-3.1-8B-Instruct
+Tests local models configured in .env file
 """
 
 import asyncio
@@ -29,17 +29,44 @@ async def test_local_rag():
     print("🚀 Testing Local RAG Service")
     print("=" * 50)
     
-    # Create config with your requested models
+    # Read configuration from environment variables
+    required_env_vars = {
+        "LOCAL_EMBEDDING_MODEL": os.getenv("LOCAL_EMBEDDING_MODEL"),
+        "LOCAL_LLM_MODEL": os.getenv("LOCAL_LLM_MODEL"),
+        "DEVICE": os.getenv("DEVICE"),
+        "USE_QUANTIZATION": os.getenv("USE_QUANTIZATION"),
+        "QUANTIZATION_BITS": os.getenv("QUANTIZATION_BITS"),
+        "MAX_NEW_TOKENS": os.getenv("MAX_NEW_TOKENS"),
+        "TEMPERATURE": os.getenv("TEMPERATURE"),
+        "TOP_K": os.getenv("TOP_K"),
+        "TOP_K_CHUNKS": os.getenv("TOP_K_CHUNKS")
+    }
+    
+    # Check for missing environment variables
+    missing_vars = [var for var, value in required_env_vars.items() if value is None]
+    if missing_vars:
+        print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+        print("Please add them to your .env file.")
+        return
+    
+    # Create config from environment variables
     config = LocalModelConfig(
-        embedding_model="Qwen/Qwen3-Embedding-0.6B",
-        llm_model="meta-llama/Llama-3.1-8B-Instruct",
-        device="auto",  # Will use CPU for testing (128MB VRAM)
-        use_quantization=True,  # Enable for large models
-        quantization_bits=8,
-        max_new_tokens=256,
-        temperature=0.2,
-        top_k_chunks=3  # Fewer chunks for testing
+        embedding_model=required_env_vars["LOCAL_EMBEDDING_MODEL"],
+        llm_model=required_env_vars["LOCAL_LLM_MODEL"],
+        device=required_env_vars["DEVICE"],
+        use_quantization=required_env_vars["USE_QUANTIZATION"].lower() == "true",
+        quantization_bits=int(required_env_vars["QUANTIZATION_BITS"]),
+        max_new_tokens=int(required_env_vars["MAX_NEW_TOKENS"]),
+        temperature=float(required_env_vars["TEMPERATURE"]),
+        top_k=int(required_env_vars["TOP_K"]),
+        top_k_chunks=int(required_env_vars["TOP_K_CHUNKS"])
     )
+    
+    print(f"📋 Configuration loaded from .env:")
+    print(f"  Embedding Model: {config.embedding_model}")
+    print(f"  LLM Model: {config.llm_model}")
+    print(f"  Device: {config.device}")
+    print(f"  Quantization: {config.use_quantization} ({config.quantization_bits}-bit)")
     
     # Initialize RAG service
     rag_service = LocalRAGService(config)
