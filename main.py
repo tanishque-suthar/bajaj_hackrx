@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 from models import HackRXRequest, HackRXResponse, HealthResponse
 from core.document import DocumentProcessor, get_document_stats
-from core.rag import RAGService, create_rag_service
+from core.rag import RAGService
 import logging
 
 # Load environment variables
@@ -26,11 +26,11 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup: Initializing services...")
     try:
         logger.info("Initializing DocumentProcessor...")
-        app.state.document_processor = DocumentProcessor(chunk_size=500, chunk_overlap=80)
+        app.state.document_processor = DocumentProcessor(chunk_size=800, chunk_overlap=120)
         logger.info("DocumentProcessor initialized successfully")
         
         logger.info("Initializing RAG service...")
-        app.state.rag_service = create_rag_service()
+        app.state.rag_service = RAGService()
         logger.info("RAG service initialized successfully")
         
         logger.info("All services initialized successfully.")
@@ -64,12 +64,6 @@ security = HTTPBearer()
 
 # Auth configuration
 VALID_TOKEN = os.getenv("API_TOKEN", " ")
-
-# --- CHANGE #1: Remove the global service initializations from here ---
-# These lines were causing the blocking issue
-# document_processor = DocumentProcessor(chunk_size=500, chunk_overlap=80)
-# rag_service = create_rag_service()
-
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify bearer token authentication"""

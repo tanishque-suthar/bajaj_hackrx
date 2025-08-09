@@ -64,8 +64,8 @@ class RAGService:
         # --- Initialize Model Manager ---
         self.gemini_models = [
             "gemini-1.5-flash",
-            "gemma-2-9b-it", 
-            "gemma-2-2b-it"
+            "gemma-3-12b-it", 
+            "gemma-3-4b-it"
         ]
         self.model_manager = ModelManager(self.gemini_models, rate_limit_cooldown=120)
         
@@ -252,29 +252,15 @@ class RAGService:
         """Fast reranking with optimizations for i5 10th gen CPU"""
         try:
             self._initialize_local_models()
-            
-            # Optimization 1: Truncate long chunks to speed up processing
-            max_chunk_length = 512  # Limit chunk length
-            truncated_pairs = []
-            
-            for chunk in chunks:
-                chunk_text = chunk['chunk']
-                if len(chunk_text) > max_chunk_length:
-                    # Truncate but try to keep complete sentences
-                    chunk_text = chunk_text[:max_chunk_length]
-                    last_period = chunk_text.rfind('.')
-                    if last_period > max_chunk_length * 0.7:  # Keep if period is reasonably close to end
-                        chunk_text = chunk_text[:last_period + 1]
-                
-                truncated_pairs.append((query, chunk_text))
-            
+            query_chunk_pairs = [(query, chunk['chunk']) for chunk in chunks]
+
             loop = asyncio.get_event_loop()
             
             def _rerank_sync():
                 with torch.no_grad():
                     # Optimization 2: Use smaller batch size for CPU
                     rerank_scores = self.rerank_model_instance.predict(
-                        truncated_pairs,
+                        query_chunk_pairs,
                         show_progress_bar=False,
                         batch_size=self.rerank_batch_size,  # Smaller batches
                         convert_to_numpy=True,  # Faster than tensor operations
@@ -300,20 +286,6 @@ class RAGService:
             # Fallback to original retrieval scores
             logger.info("⚠️ Falling back to semantic similarity scores")
             return sorted(chunks, key=lambda x: x['score'], reverse=True)
-
-    async def _rerank_chunks(self, query: str, chunks: List[Dict]) -> List[Dict]:
-        """Original reranking method (kept for backward compatibility)"""
-        return await self._rerank_chunks_fast(query, chunks)
-
-    def set_reranking_enabled(self, enabled: bool):
-        """Enable or disable reranking for performance tuning"""
-        self.enable_reranking = enabled
-        logger.info(f"🔧 Reranking {'enabled' if enabled else 'disabled'}")
-
-    def set_rerank_batch_size(self, batch_size: int):
-        """Adjust reranking batch size for performance tuning"""
-        self.rerank_batch_size = batch_size
-        logger.info(f"🔧 Reranking batch size set to {batch_size}")
             
     def generate_answer(self, query: str, relevant_chunks: List[Dict]) -> str:
         """Generate answer using Google Gemini with model-first fallback strategy"""
@@ -541,19 +513,3 @@ ANSWER:"""
         stats["gemini_models"] = self.model_manager.get_statistics()
         
         return stats
-
-
-def create_rag_service(fast_mode: bool = False) -> RAGService:
-    """Factory function to create hybrid RAG service with local embeddings/reranking
-    
-    Args:
-        fast_mode: If True, optimizes for speed over quality (smaller batches, fewer candidates)
-    """
-    if fast_mode:
-        return RAGService(
-            rerank_top_k=6,         # Fewer candidates to rerank
-            rerank_batch_size=4,    # Smaller batches for faster processing
-            enable_reranking=True   # Keep reranking but with optimizations
-        )
-    else:
-        return RAGService()  # Default settings

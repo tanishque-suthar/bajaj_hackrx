@@ -85,8 +85,16 @@ class DocumentProcessor:
         # Check file signature (magic bytes)
         if content[:4] == b'%PDF':
             return 'pdf'
-        elif content[:2] == b'PK' and b'word/' in content[:1000]:  # DOCX is a ZIP file containing word/ folder
-            return 'docx'
+        elif content[:2] == b'PK':
+            try:
+                # Try to check ZIP file structure more reliably
+                import zipfile
+                from io import BytesIO
+                with zipfile.ZipFile(BytesIO(content)) as zf:
+                    if any('word/' in name for name in zf.namelist()):
+                        return 'docx'
+            except:
+                pass
         
         # Default to PDF for backward compatibility
         logger.warning("Could not determine file type, defaulting to PDF")
@@ -211,7 +219,7 @@ class DocumentProcessor:
             
             # Remove special characters but keep important punctuation
             # Using a safer approach: remove only specific unwanted characters
-            text = re.sub(r'[^\w\s\.,;:!?()\-\%\$\@\&\#\*\+\=\[\]\{\}<>/"\']', ' ', text)
+            # text = re.sub(r'[^\w\s\.,;:!?()\-\%\$\@\&\#\*\+\=\[\]\{\}<>/"\']', ' ', text)
             
             # Fix common OCR/extraction issues
             text = re.sub(r'\s+([.,;:!?])', r'\1', text)  # Remove space before punctuation
